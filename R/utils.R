@@ -1,7 +1,5 @@
-importFrom(magrittr,"%>%")
-
 blank_tibble = function(cols) {
-  stopifnot(class(tlx_cols)=="col_spec")
+  stopifnot(class(cols)=="col_spec")
 
   x = tibble::tibble()
   for(n in names(cols$cols)) {
@@ -13,22 +11,27 @@ blank_tibble = function(cols) {
   x
 }
 
-macs_cols = cols(
-  macs_chrom=col_character(), macs_start=col_double(), macs_end=col_double(), macs_length=col_character(), macs_summit_abs=col_double(),
-  macs_pileup=col_double(), macs_pvalue=col_double(), macs_fc=col_double(), macs_qvalue=col_double(), macs_name=col_character(), macs_comment=col_character()
-)
-
-macs_blank = function() {
-  blank_tibble(macs_cols) %>% dplyr::mutate(macs_sample=NA_character_, macs_group=NA_character_)
+#' @export
+macs_cols = function() {
+  readr::cols(
+    macs_chrom=readr::col_character(), macs_start=readr::col_double(), macs_end=readr::col_double(), macs_length=readr::col_character(), macs_summit_abs=readr::col_double(),
+    macs_pileup=readr::col_double(), macs_pvalue=readr::col_double(), macs_fc=readr::col_double(), macs_qvalue=readr::col_double(), macs_name=readr::col_character(), macs_comment=readr::col_character()
+  )
 }
 
+#' @export
+macs_blank = function() {
+  blank_tibble(macs_cols()) %>% dplyr::mutate(macs_sample=NA_character_, macs_group=NA_character_)
+}
+
+#' @export
 bed_read = function(path) {
   bed = rtracklayer::import.bed(path)
   GenomicRanges::start(bed) = GenomicRanges::start(bed)-1
   bed
 }
 
-# one-based index
+#' @export
 get_seq = function(fasta, ranges) {
   bed_df = data.frame(
     chr=as.character(GenomicRanges::seqnames(ranges)),
@@ -44,6 +47,7 @@ get_seq = function(fasta, ranges) {
   ranges
 }
 
+#' @export
 join_offtarget2bait = function(offtargets_df, baits_df, genome_path) {
   baits_ranges = GenomicRanges::makeGRangesFromDataFrame(baits_df %>% dplyr::mutate(seqnames=bait_chrom, start=bait_start, end=bait_end, strand=bait_strand))
   offtargets_ranges = GenomicRanges::makeGRangesFromDataFrame(offtargets_df %>% dplyr::mutate(seqnames=offtarget_chrom, start=offtarget_start, end=offtarget_end, strand=offtarget_strand))
@@ -63,6 +67,7 @@ join_offtarget2bait = function(offtargets_df, baits_df, genome_path) {
   offtarget2bait_df
 }
 
+#' @export
 offtargets_read = function(path) {
   offtargets_ranges = bed_read(path)
   as.data.frame(offtargets_ranges) %>%

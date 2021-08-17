@@ -1,5 +1,3 @@
-importFrom(magrittr,"%>%")
-
 #' @export
 tlx_cols = function() {
   readr::cols(
@@ -15,7 +13,7 @@ tlx_cols = function() {
 
 #' @export
 tlx_blank = function() {
-  blank_tibble(tlx_cols) %>%
+  blank_tibble(tlx_cols()) %>%
     dplyr::mutate(tlx_sample=NA_character_, tlx_path=NA_character_, tlx_group=NA_character_, tlx_control=NA) %>%
     dplyr::mutate(tlx_is_bait_chromosome=NA, tlx_is_bait_junction=NA, tlx_is_offtarget=NA) %>%
     dplyr::slice(0)
@@ -23,7 +21,7 @@ tlx_blank = function() {
 
 #' @export
 tlx_read = function(path, sample, group="", group_i=1, control=F) {
-  readr::read_tsv(path, comment="#", skip=16, col_names=names(tlx_cols$cols), col_types=tlx_cols) %>%
+  readr::read_tsv(path, comment="#", skip=16, col_names=names(tlx_cols()$cols), col_types=tlx_cols()) %>%
       dplyr::mutate(tlx_sample=sample, tlx_path=path, tlx_group=group, tlx_group_i=group_i, tlx_control=control)
 }
 
@@ -278,10 +276,17 @@ tlx_mark_repeats = function(tlx_df, repeatmasker_df) {
   tlx_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df, keep.extra.columns=T, ignore.strand=T)
   r1 = as.data.frame(IRanges::findOverlaps(tlx_ranges, repeatmasker_ranges)) %>%
     dplyr::inner_join(repeatmasker_df, by=c("subjectHits"="repeatmasker_id"))
-  data.table::setDT(r1)[,.(tlx_repeatmasker_class=paste0(unique(repeatmasker_class),collapse=", ")), by = .(queryHits)] %>%
+  dot = function(x) eval.parent(data.table:::replace_dot_alias(substitute(x)))
+    # data.table::setDT(r1)[,data.table:::replace_dot_alias(quote(.(tlx_repeatmasker_class=paste0(unique(repeatmasker_class),collapse=", ")))), by=data.table:::replace_dot_alias(quote(.(queryHits)))] %>%
+
+  data.table::setDT(r1)[,list(tlx_repeatmasker_class=paste0(unique(repeatmasker_class),collapse=", ")), by=list(queryHits)] %>%
     dplyr::right_join(tlx_df, by=c("queryHits"="tlx_id")) %>%
     dplyr::select(-queryHits) %>%
     data.frame()
+  # data.table::setDT(r1)[,.(tlx_repeatmasker_class=paste0(unique(repeatmasker_class),collapse=", ")), by = .(queryHits)] %>%
+  #   dplyr::right_join(tlx_df, by=c("queryHits"="tlx_id")) %>%
+  #   dplyr::select(-queryHits) %>%
+  #   data.frame()
 }
 
 #' @export
@@ -305,9 +310,12 @@ tlx_macs2 = function(tlx_df, effective_size, maxgap=NULL, qvalue=0.01, pileup=1,
     macs2_tlx_df = macs2_tlx_df %>% dplyr::filter(is.na(tlx_repeatmasker_class))
   }
 
+  log("1")
+
   macs2_tlx_df = macs2_tlx_df %>%
     dplyr::filter(!exclude_bait_region | !tlx_is_bait_junction) %>%
     dplyr::mutate(bed_strand=ifelse(Strand=="1", "-", "+"))
+  log("1")
 
   # @TODO: I think macs does this internally
   if(exttype[1]=="along") {
@@ -319,14 +327,17 @@ tlx_macs2 = function(tlx_df, effective_size, maxgap=NULL, qvalue=0.01, pileup=1,
       macs2_tlx_df = macs2_tlx_df %>% dplyr::mutate(bed_start=Junction, bed_end=Junction+1)
     }
   }
+  log("2")
 
   if(is.null(maxgap) || maxgap==0 || maxgap=="") {
     maxgap = NULL
   }
+  log("3")
 
   macs_df.all = data.frame()
   for(gr in unique(macs2_tlx_df$tlx_group)) {
     tlx_df.gr = macs2_tlx_df %>% dplyr::filter(tlx_group==gr)
+    log("x")
 
     f_input_bed = tempfile()
     f_control_bed = tempfile()

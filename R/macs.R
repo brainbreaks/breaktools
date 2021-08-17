@@ -1,5 +1,3 @@
-importFrom(magrittr,"%>%")
-
 #' @export
 macs2 = function(name, sample, effective_size, control=NULL, maxgap=NULL, qvalue=0.01, extsize=2000, slocal=50000, llocal=10000000, output_dir="data/macs2") {
   bed_sample = paste("-t", sample)
@@ -13,7 +11,7 @@ macs2 = function(name, sample, effective_size, control=NULL, maxgap=NULL, qvalue
   output = paste0(output, collapse="\n")
   log(output)
 
-  readr::read_tsv(paste0(output_dir, "/", name, "_peaks.xls"), comment="#", col_names=names(macs_cols$cols), col_types=macs_cols) %>%
+  readr::read_tsv(paste0(output_dir, "/", name, "_peaks.xls"), comment="#", col_names=names(macs_cols()$cols), col_types=macs_cols()) %>%
     dplyr::slice(-1) %>%
     dplyr::select(-macs_comment)
 }
