@@ -1,6 +1,6 @@
-library(dplyr)
-library(readr)
+importFrom(magrittr,"%>%")
 
+#' @export
 macs2 = function(name, sample, effective_size, control=NULL, maxgap=NULL, qvalue=0.01, extsize=2000, slocal=50000, llocal=10000000, output_dir="data/macs2") {
   bed_sample = paste("-t", sample)
   bed_control = ifelse(is.null(control), "", paste("-c", control))

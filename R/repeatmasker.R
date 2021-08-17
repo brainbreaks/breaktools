@@ -1,3 +1,6 @@
+importFrom(magrittr,"%>%")
+
+#' @export
 repeatmasker_read = function(path, columns=c("repeatmasker_chrom", "repeatmasker_start", "repeatmasker_end", "repeatmasker_strand", "repeatmasker_name", "repeatmasker_class", "repeatmasker_family")) {
   cache_path = paste0("tmp/", digest::digest(paste(path, paste(columns, collapse="")), algo="md5"), "_repeatmasker_df.rda")
   if(file.exists(cache_path)) {
@@ -20,6 +23,7 @@ repeatmasker_read = function(path, columns=c("repeatmasker_chrom", "repeatmasker
   }
 }
 
+#' @export
 repeatmasker_cols = readr::cols(
   repeatmasker_bin=readr::col_double(),
   repeatmasker_score=readr::col_double(),

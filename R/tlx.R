@@ -1,20 +1,19 @@
-source("utils.R")
-library(readr)
-library(dplyr)
-library(GenomicRanges)
-library(data.table)
-library(rstatix)
+importFrom(magrittr,"%>%")
 
-tlx_cols = readr::cols(
-  Qname=readr::col_character(), JuncID=readr::col_character(), Rname=readr::col_character(), Junction=readr::col_double(),
-  Strand=readr::col_character(), Rstart=readr::col_double(), Rend=readr::col_double(),
-  B_Rname=readr::col_character(), B_Rstart=readr::col_double(), B_Rend=readr::col_double(), B_Strand=readr::col_double(),
-  B_Qstart=readr::col_double(), B_Qend=readr::col_double(), Qstart=readr::col_double(), Qend=readr::col_double(), Qlen=readr::col_double(),
-  B_Cigar=readr::col_character(), Cigar=readr::col_character(), Seq=readr::col_character(), J_Seq=readr::col_character(), Barcode=readr::col_logical(),
-  unaligned=readr::col_double(), baitonly=readr::col_double(), uncut=readr::col_double(), misprimed=readr::col_double(), freqcut=readr::col_double(),
-  largegap=readr::col_double(), mapqual=readr::col_double(), breaksite=readr::col_double(), sequential=readr::col_double(), repeatseq=readr::col_double(), duplicate=readr::col_double()
-)
+#' @export
+tlx_cols = function() {
+  readr::cols(
+    Qname=readr::col_character(), JuncID=readr::col_character(), Rname=readr::col_character(), Junction=readr::col_double(),
+    Strand=readr::col_character(), Rstart=readr::col_double(), Rend=readr::col_double(),
+    B_Rname=readr::col_character(), B_Rstart=readr::col_double(), B_Rend=readr::col_double(), B_Strand=readr::col_double(),
+    B_Qstart=readr::col_double(), B_Qend=readr::col_double(), Qstart=readr::col_double(), Qend=readr::col_double(), Qlen=readr::col_double(),
+    B_Cigar=readr::col_character(), Cigar=readr::col_character(), Seq=readr::col_character(), J_Seq=readr::col_character(), Barcode=readr::col_logical(),
+    unaligned=readr::col_double(), baitonly=readr::col_double(), uncut=readr::col_double(), misprimed=readr::col_double(), freqcut=readr::col_double(),
+    largegap=readr::col_double(), mapqual=readr::col_double(), breaksite=readr::col_double(), sequential=readr::col_double(), repeatseq=readr::col_double(), duplicate=readr::col_double()
+  )
+}
 
+#' @export
 tlx_blank = function() {
   blank_tibble(tlx_cols) %>%
     dplyr::mutate(tlx_sample=NA_character_, tlx_path=NA_character_, tlx_group=NA_character_, tlx_control=NA) %>%
@@ -22,11 +21,13 @@ tlx_blank = function() {
     dplyr::slice(0)
 }
 
+#' @export
 tlx_read = function(path, sample, group="", group_i=1, control=F) {
   readr::read_tsv(path, comment="#", skip=16, col_names=names(tlx_cols$cols), col_types=tlx_cols) %>%
       dplyr::mutate(tlx_sample=sample, tlx_path=path, tlx_group=group, tlx_group_i=group_i, tlx_control=control)
 }
 
+#' @export
 tlx_read_many = function(samples_df) {
   tlx_df.all = data.frame()
   for(f in 1:nrow(samples_df)) {
@@ -38,7 +39,7 @@ tlx_read_many = function(samples_df) {
   tlx_df.all
 }
 
-
+#' @export
 tlx_write_wig = function(tlx_df, file, extsize) {
   tld_df_mod = tlx_df %>%
     dplyr::mutate(Rstart=ifelse(Strand=="-1", Junction-extsize, Junction), Rend=ifelse(Strand=="1", Junction+extsize, Junction))
@@ -47,7 +48,7 @@ tlx_write_wig = function(tlx_df, file, extsize) {
     readr::write_tsv(file=file, col_names=F)
 }
 
-
+#' @export
 tlx_write_bed = function(tlx_df, file) {
   tlx_df %>%
     dplyr::mutate(strand=ifelse(Strand=="-1", "-", "+"), start=ifelse(Strand=="-1", Junction-1, Junction), end=ifelse(Strand=="-1", Junction, Junction+1)) %>%
@@ -55,6 +56,7 @@ tlx_write_bed = function(tlx_df, file) {
     readr::write_tsv(file=file, col_names=F)
 }
 
+#' @export
 tlx_coverage = function(tlx_df, group=c("none", "group", "sample", "path"), extsize, exttype) {
   tlx_coverage_ = function(x, extsize, exttype) {
     if(exttype[1]=="along") {
@@ -91,12 +93,13 @@ tlx_coverage = function(tlx_df, group=c("none", "group", "sample", "path"), exts
   stop("Unknown group")
 }
 
+#' @export
 tlx_remove_rand_chromosomes = function(tlx_df) {
   tlx_df %>%
     dplyr::filter(Rname %in% paste0("chr", c(1:40, "X", "Y")))
 }
 
-
+#' @export
 tlx_identify_baits = function(tlx_df, breaksite_size=19) {
   if(is.null(tlx_df) || nrow(tlx_df)==0) {
     return(data.frame(bait_sample=NA, bait_chrom=NA, bait_strand=NA, bait_start=NA, bait_end=NA) %>% dplyr::slice(0))
@@ -117,7 +120,7 @@ tlx_identify_baits = function(tlx_df, breaksite_size=19) {
   baits_df
 }
 
-
+#' @export
 tlx_test_hits = function(tlx_df, hits_ranges, paired_samples=T, paired_controls=T, extsize=10000, exttype="along") {
   if(exttype[1]=="along") {
     tlx_ranges  = GenomicRanges::makeGRangesFromDataFrame(tlx_df %>% dplyr::mutate(seqnames=Rname, sstart=ifelse(Strand=="-1", Junction-extsize, Junction-1), end=ifelse(Strand=="-1", Junction, Junction+extsize-1)), ignore.strand=T, keep.extra.columns=T)
@@ -230,18 +233,21 @@ tlx_test_hits = function(tlx_df, hits_ranges, paired_samples=T, paired_controls=
   list(test=z_sum.test, data=normcounts_df)
 }
 
+#' @export
 tlx_mark_bait_chromosome = function(tlx_df) {
   tlx_df %>%
     dplyr::select(-dplyr::matches("tlx_is_bait_chromosome")) %>%
     dplyr::mutate(tlx_is_bait_chromosome=B_Rname==Rname)
 }
 
+#' @export
 tlx_mark_bait_junctions = function(tlx_df, bait_region) {
   tlx_df %>%
     dplyr::select(-dplyr::matches("tlx_is_bait_junction")) %>%
     dplyr::mutate(tlx_is_bait_junction=B_Rname==Rname & (abs(B_Rstart-Rstart)<=bait_region/2 | abs(Rend-B_Rend)<=bait_region/2))
 }
 
+#' @export
 tlx_mark_offtargets = function(tlx_df, offtarget2bait_df) {
   # @todo: Change 100 to something meaningful?
   tlx_df$tlx_id = 1:nrow(tlx_df)
@@ -261,6 +267,7 @@ tlx_mark_offtargets = function(tlx_df, offtarget2bait_df) {
   tlx_df
 }
 
+#' @export
 tlx_mark_repeats = function(tlx_df, repeatmasker_df) {
   # @todo: make group_by faster using data.table
   repeatmasker_ranges = GenomicRanges::makeGRangesFromDataFrame(repeatmasker_df %>% dplyr::mutate(seqnames=repeatmasker_chrom, start=repeatmasker_start, end=repeatmasker_end), keep.extra.columns=T)
@@ -277,6 +284,7 @@ tlx_mark_repeats = function(tlx_df, repeatmasker_df) {
     data.frame()
 }
 
+#' @export
 tlx_macs2 = function(tlx_df, effective_size, maxgap=NULL, qvalue=0.01, pileup=1, extsize=2000, slocal=50000, llocal=10000000, exclude_bait_region=F, exclude_repeats=F, exclude_offtargets=F, exttype=c("along", "symmetrical", "none")) {
   if(exclude_bait_region && !("tlx_is_bait_junction" %in% colnames(tlx_df))) {
     stop("tlx_is_bait_junction is not found in tlx data frame")

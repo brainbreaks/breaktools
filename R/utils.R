@@ -1,9 +1,4 @@
-library(stringr)
-library(dplyr)
-library(readr)
-library(bedr)
-library(digest)
-
+importFrom(magrittr,"%>%")
 
 blank_tibble = function(cols) {
   stopifnot(class(tlx_cols)=="col_spec")
