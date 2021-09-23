@@ -98,6 +98,12 @@ tlx_remove_rand_chromosomes = function(tlx_df) {
 }
 
 #' @export
+tlx_mark_rand_chromosomes = function(tlx_df) {
+  tlx_df %>%
+    dplyr::mutate(tlx_is_rand_chrom = !(Rname %in% paste0("chr", c(1:40, "X", "Y"))))
+}
+
+#' @export
 tlx_identify_baits = function(tlx_df, breaksite_size=19) {
   if(is.null(tlx_df) || nrow(tlx_df)==0) {
     return(data.frame(bait_sample=NA, bait_chrom=NA, bait_strand=NA, bait_start=NA, bait_end=NA) %>% dplyr::slice(0))
@@ -276,8 +282,6 @@ tlx_mark_repeats = function(tlx_df, repeatmasker_df) {
   tlx_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df, keep.extra.columns=T, ignore.strand=T)
   r1 = as.data.frame(IRanges::findOverlaps(tlx_ranges, repeatmasker_ranges)) %>%
     dplyr::inner_join(repeatmasker_df, by=c("subjectHits"="repeatmasker_id"))
-  dot = function(x) eval.parent(data.table:::replace_dot_alias(substitute(x)))
-    # data.table::setDT(r1)[,data.table:::replace_dot_alias(quote(.(tlx_repeatmasker_class=paste0(unique(repeatmasker_class),collapse=", ")))), by=data.table:::replace_dot_alias(quote(.(queryHits)))] %>%
 
   data.table::setDT(r1)[,list(tlx_repeatmasker_class=paste0(unique(repeatmasker_class),collapse=", ")), by=list(queryHits)] %>%
     dplyr::right_join(tlx_df, by=c("queryHits"="tlx_id")) %>%
