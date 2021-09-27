@@ -22,7 +22,7 @@ tlx_blank = function() {
 #' @export
 tlx_read = function(path, sample, group="", group_i=1, control=F) {
   readr::read_tsv(path, comment="#", skip=16, col_names=names(tlx_cols()$cols), col_types=tlx_cols()) %>%
-      dplyr::mutate(tlx_sample=sample, tlx_path=path, tlx_group=group, tlx_group_i=group_i, tlx_control=control)
+      dplyr::mutate(Seq_length=nchar(Seq), tlx_sample=sample, tlx_path=path, tlx_group=group, tlx_group_i=group_i, tlx_control=control)
 }
 
 #' @export
@@ -38,12 +38,19 @@ tlx_read_many = function(samples_df) {
 }
 
 #' @export
-tlx_write_wig = function(tlx_df, file, extsize) {
-  tld_df_mod = tlx_df %>%
-    dplyr::mutate(Rstart=ifelse(Strand=="-1", Junction-extsize, Junction), Rend=ifelse(Strand=="1", Junction+extsize, Junction))
-  tlx_coverage(tld_df_mod, group="none") %>%
-    dplyr::select(tlxcov_chrom, tlxcov_start, tlxcov_end, tlxcov_pileup) %>%
-    readr::write_tsv(file=file, col_names=F)
+tlx_write_wig = function(tlx_df, file, group, exttype, extsize) {
+  tlxcov_df = tlx_coverage(tlx_df, group="none", exttype=exttype, extsize=extsize)
+  if(group=="none") {
+    readr::write_tsv(tlxcov_df %>% dplyr::select(tlxcov_chrom, tlxcov_start, tlxcov_end, tlxcov_pileup), file=file, col_names=F)
+  } else {
+    if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_group)
+    if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_sample)
+    if(group=="path") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_path)
+
+    tlxcov_df %>%
+      dplyr::group_by(g) %>%
+      dplyr::do(readr::write_tsv(. %>% dplyr::select(tlxcov_chrom, tlxcov_start, tlxcov_end, tlxcov_pileup), file=paste0(.$g, ".bedGraph"), col_names=F))
+  }
 }
 
 #' @export
@@ -74,7 +81,7 @@ tlx_coverage = function(tlx_df, group=c("none", "group", "sample", "path"), exts
   }
 
   if(group=="none") {
-    return(tlx_coverage_(tlx_df))
+    return(tlx_coverage_(tlx_df, extsize=extsize, exttype=exttype))
   }
   if(group=="group") {
     return(tlx_df %>% group_by(tlx_group, tlx_control) %>% do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>% dplyr::ungroup())
@@ -101,6 +108,35 @@ tlx_remove_rand_chromosomes = function(tlx_df) {
 tlx_mark_rand_chromosomes = function(tlx_df) {
   tlx_df %>%
     dplyr::mutate(tlx_is_rand_chrom = !(Rname %in% paste0("chr", c(1:40, "X", "Y"))))
+}
+
+
+#' @export
+tlx_mark_dust = function(tlx_df, tmp_dir="tmp") {
+  dir.create(tmp_dir, recursive=T, showWarnings=F)
+  qnames_hash = openssl::md5(paste0(tlx_df$Qname, collapse=""))
+  qnames_fasta = file.path(tmp_dir, paste0(qnames_hash, ".fa"))
+  qnames_dust = file.path(tmp_dir, paste0(qnames_hash, ".dust"))
+
+  if(!file.exists(qnames_dust)) {
+    if(!file.exists(qnames_fasta)) {
+      writeLines("Writing temporary fasta file with sequences...")
+      writeLines(with(tlx_df, paste0(">", Qname, "\n", Seq)), con=qnames_fasta)
+    }
+    writeLines("Using dustmasker to calculate low complexity regions...")
+    system(paste0("dustmasker -in ", qnames_fasta, " -out ", qnames_dust, " -outfmt acclist"))
+  }
+  tlx_dust_df = readr::read_tsv(qnames_dust, col_names=c("Qname", "dust_start", "dust_end")) %>%
+    dplyr::mutate(dust_length=dust_end-dust_start+1, Qname=gsub("^>", "", Qname)) %>%
+    dplyr::group_by(Qname) %>%
+    dplyr::summarize(tlx_dust_dust_regions=n(), tlx_dust_length=sum(dust_length), tlx_dust_coordinates=paste0(dust_start, "-", dust_end, collapse="; ")) %>%
+    dplyr::mutate(tlx_has_dust=T) %>%
+    dplyr::ungroup()
+  tlx_df = tlx_df %>%
+    dplyr::select(-dplyr::matches("tlx_dust_dust_regions|tlx_dust_length|tlx_dust_prop|tlx_dust_coordinates|tlx_has_dust")) %>%
+    dplyr::left_join(tlx_dust_df, by="Qname") %>%
+    dplyr::mutate(tlx_has_dust=tidyr::replace_na(tlx_has_dust, F), tlx_dust_prop=tlx_dust_length/Seq_length)
+  tlx_df
 }
 
 #' @export
