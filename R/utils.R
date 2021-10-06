@@ -12,17 +12,16 @@ blank_tibble = function(cols) {
 }
 
 #' @export
-macs_cols = function() {
-  readr::cols(
-    macs_chrom=readr::col_character(), macs_start=readr::col_double(), macs_end=readr::col_double(), macs_length=readr::col_character(), macs_summit_abs=readr::col_double(),
-    macs_pileup=readr::col_double(), macs_pvalue=readr::col_double(), macs_fc=readr::col_double(), macs_qvalue=readr::col_double(), macs_name=readr::col_character(), macs_comment=readr::col_character()
-  )
+leftJoinByOverlaps = function(query, subject, ...) {
+  query$query_id = 1:length(query)
+  subject$subject_id = 1:length(subject)
+  result_df = as.data.frame(IRanges::mergeByOverlaps(query, subject, ...))
+  result_df = dplyr::bind_rows(result_df, as.data.frame(query) %>% dplyr::anti_join(result_df %>% dplyr::select(query_id), by="query_id"))
+  result_df = result_df %>% dplyr::select(-dplyr::matches("^(query|subject)\\."))
+
+  result_df
 }
 
-#' @export
-macs_blank = function() {
-  blank_tibble(macs_cols()) %>% dplyr::mutate(macs_sample=NA_character_, macs_group=NA_character_)
-}
 
 #' @export
 bed_read = function(path) {

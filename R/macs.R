@@ -1,4 +1,17 @@
 #' @export
+macs_cols = function() {
+  readr::cols(
+    macs_chrom=readr::col_character(), macs_start=readr::col_double(), macs_end=readr::col_double(), macs_length=readr::col_character(), macs_summit_abs=readr::col_double(),
+    macs_pileup=readr::col_double(), macs_pvalue=readr::col_double(), macs_fc=readr::col_double(), macs_qvalue=readr::col_double(), macs_name=readr::col_character(), macs_comment=readr::col_character()
+  )
+}
+
+#' @export
+macs_blank = function() {
+  blank_tibble(macs_cols()) %>% dplyr::mutate(macs_sample=NA_character_, macs_group=NA_character_)
+}
+
+#' @export
 macs2 = function(name, sample, effective_size, control=NULL, maxgap=NULL, qvalue=0.01, extsize=2000, slocal=50000, llocal=10000000, output_dir="data/macs2") {
   bed_sample = paste("-t", sample)
   bed_control = ifelse(is.null(control), "", paste("-c", control))
