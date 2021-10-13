@@ -108,6 +108,40 @@ tlx_mark_rand_chromosomes = function(tlx_df) {
     dplyr::mutate(tlx_is_rand_chrom = !(Rname %in% paste0("chr", c(1:40, "X", "Y"))))
 }
 
+tlx_calc_copynumber = function(tlx_df, bowtie_index, max_hits=500, threads=8, tmp_dir="tmp") {
+  tlx_df = tlx_df %>%
+    dplyr::mutate(QSeq=substr(Seq, Qstart, Qend))
+
+  dir.create(tmp_dir, recursive=T, showWarnings=F)
+  qnames_hash = openssl::md5(paste0(tlx_df$Qname, collapse=""))
+  qseq_fasta = file.path(tmp_dir, paste0(qnames_hash, ".fa"))
+  qseq_count = file.path(tmp_dir, paste0(qnames_hash, ".count"))
+  qseq_cumcount = file.path(tmp_dir, paste0(qnames_hash, ".cumcount"))
+
+  if(!file.exists(qseq_cumcount)) {
+    if(!file.exists(qseq_count)) {
+      if(!file.exists(qseq_fasta)) {
+        writeLines(with(tlx_df, paste0(">", Qname, "\n", QSeq)), con=qseq_fasta)
+      }
+
+      cmd = paste0("bowtie2 -f -x ", bowtie_index, " -U ", qseq_fasta ," -k ", max_hits, " --threads ", threads, " -S ", qseq_count)
+      system(cmd)
+    }
+
+    qseq_count_df = readr::read_tsv(qseq_count, col_names=F, skip=68)
+    qseq_cumcount_df = qseq_count_df %>%
+      dplyr::group_by(X1) %>%
+      dplyr::summarize(n=n())%>%
+      setNames(c("Qname", "tlx_copynumber"))
+    readr::write_tsv(qseq_cumcount_df, file=qseq_cumcount)
+  } else {
+    qseq_cumcount_df = readr::read_tsv(qseq_cumcount)
+  }
+
+  tlx_df %>%
+    dplyr::select(-dplyr::matches("tlx_copynumber")) %>%
+    dplyr::left_join(qseq_cumcount_df, by="Qname")
+}
 
 #' @export
 tlx_mark_dust = function(tlx_df, tmp_dir="tmp") {
