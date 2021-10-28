@@ -1,3 +1,13 @@
+validate_group = function(group) {
+  valid_group = c("none", "group", "sample", "path")
+  if(!(group %in% valid_group)) { stop(simpleError(paste0("group should be one of: ", paste(valid_group, collapse=", "), " (Actual:", group, ")"))) }
+}
+
+validate_exttype = function(exttype) {
+  valid_exttype = c("symmetrical", "along")
+  if(!(exttype %in% valid_exttype)) { stop(simpleError(paste0("exttype should be one of: ", paste(valid_exttype, collapse=", "), " (Actual:", exttype, ")"))) }
+}
+
 #' @export
 tlx_cols = function() {
   readr::cols(
@@ -38,32 +48,66 @@ tlx_read_many = function(samples_df) {
 }
 
 #' @export
-tlx_write_wig = function(tlx_df, file, group, exttype, extsize) {
-  tlxcov_df = tlx_coverage(tlx_df, group="none", exttype=exttype, extsize=extsize)
+tlx_write_wig = function(tlx_df, path, group, exttype, extsize) {
+  validate_group(group)
+  validate_exttype(exttype)
+
+  tlxcov_df = tlx_coverage(tlx_df, group=group, exttype=exttype, extsize=extsize)
   if(group=="none") {
-    readr::write_tsv(tlxcov_df %>% dplyr::select(tlxcov_chrom, tlxcov_start, tlxcov_end, tlxcov_pileup), file=file, col_names=F)
+    readr::write_tsv(tlxcov_df %>% dplyr::select(tlxcov_chrom, tlxcov_start, tlxcov_end, tlxcov_pileup), file=paste0(path, ".bedGraph"), col_names=F)
   } else {
-    if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_group)
+    if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(tlx_group, "_", ifelse(tlx_control, "control", "treatment")))
     if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_sample)
     if(group=="path") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_path)
 
+    if(!dir.exists(path)) {
+      dir.create(path)
+    }
+
     tlxcov_df %>%
       dplyr::group_by(g) %>%
-      dplyr::do(readr::write_tsv(. %>% dplyr::select(tlxcov_chrom, tlxcov_start, tlxcov_end, tlxcov_pileup), file=paste0(.$g, ".bedGraph"), col_names=F))
+      dplyr::do((function(z){
+        z.out = z %>% dplyr::select(tlxcov_chrom, tlxcov_start, tlxcov_end, tlxcov_pileup)
+        readr::write_tsv(z.out, file=file.path(path, paste0(z$g[1], ".bedGraph")), col_names=F)
+      })(.))
   }
+  NULL
 }
 
 #' @export
-tlx_write_bed = function(tlx_df, file) {
-  tlx_df %>%
-    dplyr::mutate(strand=ifelse(Strand=="-1", "-", "+"), start=ifelse(Strand=="-1", Junction-1, Junction), end=ifelse(Strand=="-1", Junction, Junction+1)) %>%
-    dplyr::select(Rname, start, end, Qname, mapqual, strand) %>%
-    readr::write_tsv(file=file, col_names=F)
+tlx_write_bed = function(tlx_df, path, group) {
+  tlx_bed_df = tlx_df %>%
+    dplyr::mutate(strand=ifelse(Strand=="-1", "-", "+"), start=ifelse(Strand=="-1", Junction-1, Junction), end=ifelse(Strand=="-1", Junction, Junction+1))
+  if(group=="none") {
+    readr::write_tsv(tlx_bed_df %>% dplyr::select(Rname, start, end, Qname, mapqual, strand), file=paste0(path, ".bedGraph"), col_names=F)
+  } else {
+    if(group=="group") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=paste0(tlx_group, "_", ifelse(tlx_control, "control", "treatment")))
+    if(group=="sample") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_sample)
+    if(group=="path") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_path)
+
+    if(!dir.exists(path)) {
+      dir.create(path)
+    }
+
+    tlx_bed_df %>%
+      dplyr::group_by(g) %>%
+      dplyr::do((function(z){
+        z.out = z %>% dplyr::select(Rname, start, end, Qname, mapqual, strand)
+        readr::write_tsv(z.out, file=file.path(path, paste0(z$g[1], ".bed")), col_names=F)
+      })(.))
+  }
+  NULL
 }
 
 #' @export
-tlx_coverage = function(tlx_df, group=c("none", "group", "sample", "path"), extsize, exttype) {
+tlx_coverage = function(tlx_df, group, extsize, exttype) {
+  validate_group(group)
+  validate_exttype(exttype)
+
   tlx_coverage_ = function(x, extsize, exttype) {
+    e<<-exttype
+    validate_exttype(exttype)
+
     if(exttype[1]=="along") {
       x_ranges  = GenomicRanges::makeGRangesFromDataFrame(x %>% dplyr::mutate(seqnames=Rname, sstart=ifelse(Strand=="-1", Junction-extsize, Junction-1), end=ifelse(Strand=="-1", Junction, Junction+extsize-1)), ignore.strand=T, keep.extra.columns=T)
     } else {
@@ -75,22 +119,24 @@ tlx_coverage = function(tlx_df, group=c("none", "group", "sample", "path"), exts
     }
 
     cov_ranges = as(GenomicRanges::coverage(x_ranges), "GRanges")
-    as.data.frame(cov_ranges) %>%
+    ret_df = as.data.frame(cov_ranges) %>%
       dplyr::rename(tlxcov_chrom="seqnames", tlxcov_start="start", tlxcov_end="end", tlxcov_pileup="score") %>%
       dplyr::select(matches("tlxcov_"))
+    ret_df
+    # ret_df %>% dplyr::filter(tlxcov_chrom=="chr5", dplyr::between(tlxcov_start, 131064408, 131964448))
   }
 
   if(group=="none") {
     return(tlx_coverage_(tlx_df, extsize=extsize, exttype=exttype))
   }
   if(group=="group") {
-    return(tlx_df %>% group_by(tlx_group, tlx_control) %>% do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>% dplyr::ungroup())
+    return(tlx_df %>% group_by(tlx_group, tlx_control) %>% dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>% dplyr::ungroup())
   }
   if(group=="sample") {
-    return(tlx_df %>% group_by(tlx_group, tlx_group_i, tlx_sample, tlx_control) %>% do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>% dplyr::ungroup())
+    return(tlx_df %>% group_by(tlx_group, tlx_group_i, tlx_sample, tlx_control) %>% dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>% dplyr::ungroup())
   }
   if(group=="path") {
-    return(tlx_df %>% group_by(tlx_group, tlx_group_i, tlx_sample, tlx_control, tlx_path) %>% do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>% dplyr::ungroup())
+    return(tlx_df %>% group_by(tlx_group, tlx_group_i, tlx_sample, tlx_control, tlx_path) %>% dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>% dplyr::ungroup())
   }
 
   stop("Unknown group")
@@ -172,7 +218,7 @@ tlx_mark_dust = function(tlx_df, tmp_dir="tmp") {
 }
 
 #' @export
-tlx_identify_baits = function(tlx_df, breaksite_size=19) {
+tlx_identify_baits = function(tlx_df, breaksite_size=19, genome_fasta="") {
   if(is.null(tlx_df) || nrow(tlx_df)==0) {
     return(data.frame(bait_sample=NA, bait_chrom=NA, bait_strand=NA, bait_start=NA, bait_end=NA) %>% dplyr::slice(0))
   }
@@ -189,11 +235,21 @@ tlx_identify_baits = function(tlx_df, breaksite_size=19) {
     dplyr::ungroup() %>%
     dplyr::select(bait_group=tlx_group, bait_sample=tlx_sample, bait_chrom=B_Rname, bait_strand, bait_start, bait_end)
 
+  if(genome_fasta!="") {
+    if(!file.exists(genome_fasta)) {
+      log("Could not find genome file '", genome_fasta, "'")
+    }
+    baits_ranges = GenomicRanges::makeGRangesFromDataFrame(baits_df %>% dplyr::select(seqnames=bait_chrom, start=bait_start, end=bait_end, strand=bait_strand))
+    baits_df$bait_sequence = get_seq(genome_fasta, baits_ranges)$sequence
+  }
+
   baits_df
 }
 
 #' @export
 tlx_test_hits = function(tlx_df, hits_ranges, paired_samples=T, paired_controls=T, extsize=10000, exttype="along") {
+  validate_exttype(exttype)
+
   if(exttype[1]=="along") {
     tlx_ranges  = GenomicRanges::makeGRangesFromDataFrame(tlx_df %>% dplyr::mutate(seqnames=Rname, sstart=ifelse(Strand=="-1", Junction-extsize, Junction-1), end=ifelse(Strand=="-1", Junction, Junction+extsize-1)), ignore.strand=T, keep.extra.columns=T)
   } else {
@@ -362,10 +418,13 @@ tlx_mark_repeats = function(tlx_df, repeatmasker_df) {
 }
 
 #' @export
-tlx_macs2 = function(tlx_df, effective_size, maxgap=NULL, qvalue=0.01, pileup=1, extsize=2000, slocal=50000, llocal=10000000, exclude_bait_region=F, exclude_repeats=F, exclude_offtargets=F, exttype=c("along", "symmetrical", "none"), grouping=c("group", "sample")) {
+tlx_macs2 = function(tlx_df, effective_size, maxgap=NULL, qvalue=0.01, pileup=1, extsize=2000, slocal=50000, llocal=10000000, exclude_bait_region=F, exclude_repeats=F, exclude_offtargets=F, exttype, grouping) {
   if(exclude_bait_region && !("tlx_is_bait_junction" %in% colnames(tlx_df))) {
     stop("tlx_is_bait_junction is not found in tlx data frame")
   }
+
+  validate_group(grouping)
+  validate_exttype(exttype)
 
   macs2_tlx_df = tlx_df
 
@@ -448,3 +507,59 @@ tlx_macs2 = function(tlx_df, effective_size, maxgap=NULL, qvalue=0.01, pileup=1,
 
   macs_df.all
 }
+
+plot_logos_coordinates = function(fastq_paths, sample_names, widths=list("Beginning"=c(1,30), "End"=c(-25, -1))) {
+  plots = list()
+  for(i in 1:length(fastq_paths)) {
+    sample_path = fastq_paths[i]
+    sample_name = sample_names[i]
+    writeLines(paste0(i, "/", length(fastq_paths), " : ", sample_name, "    ", sample_path))
+
+    fasta = ShortRead::readFastq(sample_path)
+    fasta_reads = ShortRead::sread(fasta)
+    plist = list()
+    plist[[1]] = cowplot::ggdraw() +
+      cowplot::draw_label(sample_names[i], size=10)
+    for(wname in names(widths)) {
+      writeLines(paste0("  ", wname))
+      fasta_w = Biostrings::subseq(fasta_reads, start=widths[[wname]][1], end=widths[[wname]][2])
+      plist[[length(plist)+1]] = ggplot() +
+          ggseqlogo::geom_logo(as.character(fasta_w)) +
+          labs(title=wname) +
+          ggseqlogo::theme_logo() +
+          guides(fill="none") +
+          theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())
+    }
+
+
+    defaultW = getOption("warn")
+    options(warn = -1)
+    p = cowplot::plot_grid(plotlist=plist, ncol=1+length(widths), rel_widths=c(1,3,3))
+    options(warn = defaultW)
+    plots[[sample_name]] = p
+  }
+  plots
+}
+
+
+# fastq_paths = list.files(path="~/Workspace/wei_pnas2018_htgts/fastq", pattern=".*_1_.*.fastq", full.names=T)
+# sample_names = paste0(gsub("_.*", "", basename(fastq_paths)), "\n", gsub("_", "\n", gsub(".*_1_|.fastq|_Exp\\w", "", basename(fastq_paths))))
+# pp = plot_logos_tails(fastq_paths, sample_names)
+# pdf("~/Workspace/wei_pnas2018_htgts/htgts_logo.pdf", width=8.27, height=11.69)
+# plot_grid(plotlist=pp, ncol=1)
+# dev.off()
+#
+# fastq_paths = list.files(path="~/Workspace/B400_014/preprocess/multx", pattern=".*014_R1.fq.gz", full.names=T)
+# sample_names = gsub("_.*", "", basename(fastq_paths))
+# pp = plot_logos_tails(fastq_paths, sample_names)
+# pdf("~/Workspace/B400_014/htgts_logo2.pdf", width=8.27, height=11.69)
+# plot_grid(plotlist=pp, ncol=1)
+# dev.off()
+#
+#
+# fastq_paths = list.files(path="~/Workspace/B400_011/preprocess/multx", pattern=".*011_R1.fq.gz", full.names=T)
+# sample_names = gsub("_.*", "", basename(fastq_paths))
+# pp = plot_logos_tails(fastq_paths, sample_names)
+# pdf("~/Workspace/B400_011/htgts_logo.pdf", width=8.27, height=11.69)
+# plot_grid(plotlist=pp, ncol=1)
+# dev.off()
