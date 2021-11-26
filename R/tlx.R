@@ -522,7 +522,18 @@ plot_logos_coordinates = function(fastq_paths, sample_names, widths=list("Beginn
       cowplot::draw_label(sample_names[i], size=10)
     for(wname in names(widths)) {
       writeLines(paste0("  ", wname))
-      fasta_w = Biostrings::subseq(fasta_reads, start=widths[[wname]][1], end=widths[[wname]][2])
+
+      # If width is longer for all or some sequences then extend the sequences to the needed length
+      fasta_reads_long = fasta_reads
+      fasta_widths = Biostrings::width(fasta_reads_long)
+      fasta_ends = ifelse(fasta_widths>widths[[wname]][2], widths[[wname]][2], fasta_widths)
+      missing_nchar = widths[[wname]][2] - fasta_ends
+      if(any(missing_nchar>0)) {
+        fasta_missing = Biostrings::DNAStringSet(sapply(missing_nchar[missing_nchar>0], function(x) paste(replicate(x, expr="N"), collapse="")))
+        fasta_reads_long[missing_nchar>0] = Biostrings::xscat(fasta_reads_long[missing_nchar>0], fasta_missing)
+      }
+
+      fasta_w = Biostrings::subseq(fasta_reads_long, start=widths[[wname]][1], end=widths[[wname]][2])
       plist[[length(plist)+1]] = ggplot() +
           ggseqlogo::geom_logo(as.character(fasta_w)) +
           labs(title=wname) +
