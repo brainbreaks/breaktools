@@ -1,9 +1,10 @@
 #' @export
-htgts_calculate_positions = function(sequences_df, database_path) {
+htgts_calculate_positions = function(sequences_df, database_path, primer_sequence_column="Primer", sgRNA_sequence_column="Sequence", PAM_sequence_column="Sequence_PAM") {
   sequences_cols = colnames(sequences_df)
-  sequences_df = sequences_df %>% data.frame() %>% dplyr::mutate(sequence_latent_id=1:n())
+  sequences_df = sequences_df %>% data.frame() %>% dplyr::mutate(sequence_latent_id=1:dplyr::n())
   sequences_long_df = sequences_df %>%
-    dplyr::mutate(Sequence_and_PAM=paste0(Sequence, Sequence_PAM), Chrom_lower=gsub("Chr", "chr", Chrom))  %>%
+    dplyr::rename(Sequence=sgRNA_sequence_column, Sequence_PAM=PAM_sequence_column, RED_primer=primer_sequence_column) %>%
+    dplyr::mutate(Sequence_and_PAM=paste0(Sequence, Sequence_PAM))  %>%
     reshape2::melt(measure.vars=c("RED_primer", "Sequence_and_PAM"), value.name="Seq")
 
   blat_df = get_blat(unique(sequences_long_df$Seq), database=database_path)
@@ -20,13 +21,12 @@ htgts_calculate_positions = function(sequences_df, database_path) {
     dplyr::inner_join(sequences_long2blat_df %>% dplyr::mutate(variable=paste0(variable, ".end")) %>% reshape2::dcast(sequence_latent_id ~ variable, value.var="blat_target_end"), by="sequence_latent_id") %>%
     dplyr::inner_join(sequences_long2blat_df %>% dplyr::mutate(variable=paste0(variable, ".strand")) %>% reshape2::dcast(sequence_latent_id ~ variable, value.var="blat_strand"), by="sequence_latent_id") %>%
     dplyr::mutate(Cut_position=ifelse(Sequence_and_PAM.strand=="+", Sequence_and_PAM.end-nchar(Sequence_PAM)-3, Sequence_and_PAM.start+nchar(Sequence_PAM)+2)) %>%
-    dplyr::mutate(Strand_calculated=RED_primer.strand,
-                  Start_calculated=ifelse(RED_primer.strand=="+", RED_primer.start, Cut_position+1),
+    dplyr::mutate(Start_calculated=ifelse(RED_primer.strand=="+", RED_primer.start, Cut_position+1),
                   End_calculated=ifelse(RED_primer.strand=="+", Cut_position, RED_primer.end+1)) %>%
     data.frame()
 
 
-  sequences_result_final_df = (sequences_result_df %>% dplyr::mutate(Start=Start_calculated, End=End_calculated, Strand=Strand_calculated))[,unique(c(sequences_cols, "Start", "End", "Strand"))]
+  sequences_result_final_df = (sequences_result_df %>% dplyr::mutate(Start=Start_calculated, End=End_calculated, Strand=RED_primer.strand, SequenceStrand=Sequence_and_PAM.strand))[,unique(c(sequences_cols, "Start", "End", "Strand", "SequenceStrand"))]
   sequences_result_final_df
 }
 

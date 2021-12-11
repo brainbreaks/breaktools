@@ -1,10 +1,22 @@
 validate_group = function(group) {
-  valid_group = c("none", "group", "sample", "path")
+  valid_group = c("none", "group", "sample")
   if(!(group %in% valid_group)) { stop(simpleError(paste0("group should be one of: ", paste(valid_group, collapse=", "), " (Actual:", group, ")"))) }
 }
 
+validate_group_within = function(within) {
+  within_group = c("all", "group", "none")
+  if(!(within %in% within_group)) { stop(simpleError(paste0("group should be one of: ", paste(within_group, collapse=", "), " (Actual:", within, ")"))) }
+}
+
+
+validate_normalization_target = function(target) {
+  valid_targets = c("smallest", "largest", "mean", "median")
+  if(!(target %in% valid_targets)) { stop(simpleError(paste0("normalization target should be one of: ", paste(valid_targets, collapse=", "), " (Actual:", target, ")"))) }
+}
+
+
 validate_exttype = function(exttype) {
-  valid_exttype = c("symmetrical", "along")
+  valid_exttype = c("symmetrical", "along", "none")
   if(!(exttype %in% valid_exttype)) { stop(simpleError(paste0("exttype should be one of: ", paste(valid_exttype, collapse=", "), " (Actual:", exttype, ")"))) }
 }
 
@@ -32,14 +44,15 @@ tlx_blank = function() {
 #' @export
 tlx_read = function(path, sample, group="", group_i=1, control=F) {
   readr::read_tsv(path, comment="#", skip=16, col_names=names(tlx_cols()$cols), col_types=tlx_cols()) %>%
-      dplyr::mutate(Seq_length=nchar(Seq), tlx_sample=sample, tlx_path=path, tlx_group=group, tlx_group_i=group_i, tlx_control=control)
+    dplyr::mutate(tlx_strand=ifelse(Strand<0, "-", "+")) %>%
+    dplyr::mutate(Seq_length=nchar(Seq), tlx_sample=sample, tlx_path=path, tlx_group=group, tlx_group_i=group_i, tlx_control=control)
 }
 
 #' @export
 tlx_read_many = function(samples_df) {
   tlx_df.all = data.frame()
   for(f in 1:nrow(samples_df)) {
-    log("Reading tlx file ", f, ":",  samples_df$path[f])
+    log("Reading tlx file ", f, "/", nrow(samples_df), ": ",  samples_df$path[f])
     tlx_df.f = tlx_read(samples_df$path[f], sample=samples_df$sample[f], control=samples_df$control[f], group=samples_df$group[f], group_i=samples_df$group_i[f])
     tlx_df.all = dplyr::bind_rows(tlx_df.all, tlx_df.f)
   }
@@ -47,65 +60,139 @@ tlx_read_many = function(samples_df) {
   tlx_df.all
 }
 
-#' @export
-tlx_write_wig = function(tlx_df, path, group, exttype, extsize) {
-  validate_group(group)
-  validate_exttype(exttype)
-
-  tlxcov_df = tlx_coverage(tlx_df, group=group, exttype=exttype, extsize=extsize)
-  if(group=="none") {
-    readr::write_tsv(tlxcov_df %>% dplyr::select(tlxcov_chrom, tlxcov_start, tlxcov_end, tlxcov_pileup), file=paste0(path, ".bedGraph"), col_names=F)
-  } else {
-    if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(tlx_group, "_", ifelse(tlx_control, "control", "treatment")))
-    if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_sample)
-    if(group=="path") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_path)
-
-    if(!dir.exists(path)) {
-      dir.create(path)
-    }
-
-    tlxcov_df %>%
-      dplyr::group_by(g) %>%
-      dplyr::do((function(z){
-        z.out = z %>% dplyr::select(tlxcov_chrom, tlxcov_start, tlxcov_end, tlxcov_pileup)
-        readr::write_tsv(z.out, file=file.path(path, paste0(z$g[1], ".bedGraph")), col_names=F)
-      })(.))
+tlx_generate_filename_col = function(df, include_sample=F, include_group=F, include_strand=F, include_treatment=T) {
+  if(!include_sample & !include_group & !include_strand & !include_treatment) {
+    stop(simpleError("At least one parameter must be used to generate file name (include_sample, include_group, include_strand, include_treatment"))
   }
-  NULL
+  if(include_sample & !("tlx_sample" %in% colnames(df))) stop(simpleError("tlx_sample column is not pressent in data.frame"))
+  if(include_group & !("tlx_group" %in% colnames(df))) stop(simpleError("tlx_group column is not pressent in data.frame"))
+  if(include_strand & !("tlx_strand" %in% colnames(df))) stop(simpleError("tlx_strand column is not pressent in data.frame"))
+  if(include_treatment & !("tlx_control" %in% colnames(df))) stop(simpleError("tlx_control column is not pressent in data.frame"))
+
+  map_strand = c("+"="plus", "-"="minus")
+  filenames_df = df %>% dplyr::select()
+  if(include_group) filenames_df$group = df$tlx_group
+  if(include_sample) filenames_df$sample = df$tlx_sample
+  if(include_treatment) filenames_df$control = ifelse(df$tlx_control, "ctrl", "trmnt")
+  if(include_strand) filenames_df$strand = map_strand[df$tlx_strand]
+  table(filenames_df$group)
+  table(df$tlx_group)
+  filenames_df %>% dplyr::distinct()
+  # generated_path = apply(filenames_df, 1, paste, collapse="_")
+  # generated_path = unlist(purrr::pmap(filenames_df, paste, sep = '_'))
+  generated_path = do.call(paste, c(filenames_df, sep = "_"))
+  unique_generated_path = unique(generated_path)
+  map_unique_generated_path = gsub("[/.]", "-", unique_generated_path)
+  map_unique_generated_path = gsub("[^A-Za-z0-9 -]+", "_", map_unique_generated_path)
+  map_unique_generated_path = gsub("(_| )+", "\\1", map_unique_generated_path)
+  names(map_unique_generated_path) = unique_generated_path
+  unname(map_unique_generated_path[generated_path])
 }
 
 #' @export
-tlx_write_bed = function(tlx_df, path, group) {
+tlx_write_bedgraph = function(tlx_df, path, group_within, exttype, extsize, normalize_within, normalization_target="smallest", split_strand=F) {
+  validate_group_within(group_within)
+  validate_group_within(normalize_within)
+  validate_normalization_target(normalization_target)
+  validate_exttype(exttype)
+
+  writeLines("Calculating coverage...")
+  tlxcov_df = tlx_coverage(tlx_df, group_within=group_within, exttype=exttype, extsize=extsize, normalize_within=normalize_within, normalization_target=normalization_target, ignore.strand=!split_strand) %>%
+    dplyr::arrange(tlxcov_chrom, tlxcov_start)
+
+  writeLines("calculating filenames(s)...")
+  if(group_within=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=split_strand))
+  if(group_within=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=split_strand))
+  if(group_within=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=split_strand))
+  if(group_within=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=split_strand))
+  if(split_strand) tlxcov_df = tlxcov_df %>% dplyr::mutate(tlxcov_pileup=ifelse(tlx_strand=="+", 1, -1)*tlxcov_pileup)
+
+
+  writeLines("Writing bedgraph file(s)...")
+  if(!dir.exists(path)) dir.create(path, recursive=T)
+  tlxcov_df %>%
+    dplyr::group_by(g) %>%
+    dplyr::do((function(z){
+      z.out = z %>% dplyr::select(tlxcov_chrom, tlxcov_start, tlxcov_end, tlxcov_pileup)
+      z.path = file.path(path, paste0(z$g[1], ".bedgraph"))
+      writeLines(paste0("Writing to file '", z.path, "'"))
+      readr::write_tsv(z.out, file=z.path, col_names=F)
+      data.frame()
+    })(.))
+  return(0)
+}
+
+#' @export
+tlx_write_bed = function(tlx_df, path, group_within, split_strand=F) {
+  validate_group_within(group_within)
+
   tlx_bed_df = tlx_df %>%
-    dplyr::mutate(strand=ifelse(Strand=="-1", "-", "+"), start=ifelse(Strand=="-1", Junction-1, Junction), end=ifelse(Strand=="-1", Junction, Junction+1))
-  if(group=="none") {
-    readr::write_tsv(tlx_bed_df %>% dplyr::select(Rname, start, end, Qname, mapqual, strand), file=paste0(path, ".bedGraph"), col_names=F)
-  } else {
-    if(group=="group") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=paste0(tlx_group, "_", ifelse(tlx_control, "control", "treatment")))
-    if(group=="sample") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_sample)
-    if(group=="path") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_path)
+    dplyr::mutate(start=Junction, end=Junction, name=paste0(Qname, " (", tlx_sample, ")"))
+    # dplyr::mutate(start=ifelse(Strand=="-1", Junction-1, Junction), end=ifelse(Strand=="-1", Junction, Junction+1))
 
-    if(!dir.exists(path)) {
-      dir.create(path)
-    }
+  writeLines("calculating filenames(s)...")
+  if(group_within=="all") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=split_strand))
+  if(group_within=="group") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=split_strand))
+  if(group_within=="sample") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=split_strand))
 
-    tlx_bed_df %>%
-      dplyr::group_by(g) %>%
-      dplyr::do((function(z){
-        z.out = z %>% dplyr::select(Rname, start, end, Qname, mapqual, strand)
-        readr::write_tsv(z.out, file=file.path(path, paste0(z$g[1], ".bed")), col_names=F)
-      })(.))
-  }
-  NULL
+  writeLines("Writing bedgraph file(s)...")
+  if(!dir.exists(path)) dir.create(path, recursive=T)
+  tlx_bed_df %>%
+    dplyr::group_by(g) %>%
+    dplyr::do((function(z){
+      z.out = z %>% dplyr::select(Rname, start, end, name, mapqual, tlx_strand)
+      z.path = file.path(path, paste0(z$g[1], ".bed"))
+      writeLines(paste0("Writing to file '", z.path, "'"))
+      readr::write_tsv(z.out, file=z.path, col_names=F)
+      data.frame()
+    })(.))
+  return(0)
 }
 
-#' @export
-tlx_coverage = function(tlx_df, group, extsize, exttype) {
-  validate_group(group)
+#' @title tlx_coverage
+#'
+#' @description Calculates coverage from tlx dataframe. The coverage can be pulled from multiple samples based on \code{group} parameter and
+#' normalized base on \code{normalize_within} and \code{normalize_between} and \code{normalization_target}
+#' on group_within
+#'
+#' @param tlx_df TLX dataframe produced by HTGTS translocation pipeline
+#' @param group Grouping columns. Possible values are:
+#'    all         - group together all treatment and control samples
+#'    group       - group together all treatment and control samples from each group separately
+#'    none - Do not group anything
+#' @param extsize Each junction coordinate is extended by \code{extsize} bais pairs to calculate pileup
+#' @param exttype Type of junction extention for pileup calculation:
+#'    symmetrical - Extention is done around the center of the junction extending by \code{extsize/2} each direction
+#'    along       - Extention is done in the direction corresponding to pray strand and extending \code{extsize} that direction
+#' @param normalize_within Reads normalization strategy within the group. It signifies how each sample will be normalized
+#' before pulling it together with other samples from this group. Possible values are:
+#'    all         - Group together all treatment and control samples
+#'    group       - Group together each group treatment and control samples separately
+#'    none        - Do not group anything
+#' @param normalize_between Reads normalization strategy between the groups. It signifies how each group is normalized
+#' to allow direct comparison to other groups. Possible values are:
+#'    all         - All groups control and treetment libraries are normalized to have same size so that they can be directly compared
+#'    group       - Control and treatment libraries are normalized within each group separately so that they can be compared within the group
+#'    none        - No normalization is done
+#' @param normalization_target Normalization strategy.
+#'    smallest    - Normalize to smallest sample/group (make other samples smaller)
+#'    largest     - Normalize to largest sample/group (make other samples bigger)
+#'    mean        - Normalize to mean
+#'    meadian     - Normalize to median
+#'
+#' @return A data frame with coverages for each sample or group
+#' @examples
+#' no examples yet
+tlx_coverage = function(tlx_df, group, extsize, exttype, normalize_within=NULL, normalize_between=NULL, normalization_target="smallest", ignore.strand=T) {
+  if(is.null(normalize_within)) normalize_within = group
+  if(is.null(normalize_between)) normalize_between = group
+  validate_group_within(group)
+  validate_group_within(normalize_within)
+  validate_group_within(normalize_between)
   validate_exttype(exttype)
+  validate_normalization_target(normalization_target)
 
   tlx_coverage_ = function(x, extsize, exttype) {
-    e<<-exttype
     validate_exttype(exttype)
 
     if(exttype[1]=="along") {
@@ -123,23 +210,69 @@ tlx_coverage = function(tlx_df, group, extsize, exttype) {
       dplyr::rename(tlxcov_chrom="seqnames", tlxcov_start="start", tlxcov_end="end", tlxcov_pileup="score") %>%
       dplyr::select(matches("tlxcov_"))
     ret_df
-    # ret_df %>% dplyr::filter(tlxcov_chrom=="chr5", dplyr::between(tlxcov_start, 131064408, 131964448))
   }
 
-  if(group=="none") {
-    return(tlx_coverage_(tlx_df, extsize=extsize, exttype=exttype))
-  }
-  if(group=="group") {
-    return(tlx_df %>% group_by(tlx_group, tlx_control) %>% dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>% dplyr::ungroup())
-  }
-  if(group=="sample") {
-    return(tlx_df %>% group_by(tlx_group, tlx_group_i, tlx_sample, tlx_control) %>% dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>% dplyr::ungroup())
-  }
-  if(group=="path") {
-    return(tlx_df %>% group_by(tlx_group, tlx_group_i, tlx_sample, tlx_control, tlx_path) %>% dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>% dplyr::ungroup())
-  }
+  if(group=="all") group_cols = c("tlx_control")
+  if(group=="group") group_cols = c("tlx_group", "tlx_control")
+  if(group %in% c("sample", "none")) group_cols = c("tlx_group", "tlx_group_i", "tlx_control", "tlx_sample")
+  if(!ignore.strand) group_cols = c(group_cols, "tlx_strand")
+  if(normalize_within=="all") normalize_within_cols = c("tlx_control")
+  if(normalize_within=="group") normalize_within_cols = c("tlx_group", "tlx_control")
+  if(normalize_within %in% "none") normalize_within_cols = c("tlx_sample", "tlx_control")
+  if(normalize_between=="all") normalize_between_cols = c()
+  if(normalize_between=="group") normalize_between_cols = setdiff(group_cols, "tlx_control")
+  if(normalize_between %in% "none") normalize_between_cols = group_cols
 
-  stop("Unknown group")
+  normalization_target_fun = c("smallest"=min, "largest"=max, "mean"=mean, "median"=median)[[normalization_target]]
+
+  # Calculate library sizes for each sample and a normalization factor according to normalize argument
+  writeLines("Calculating normalization factor for sample...")
+  libsizes_df = tlx_df %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(tlx_control=ifelse(tlx_control, "Control", "Treatment")) %>%
+    dplyr::group_by(tlx_sample, tlx_group, tlx_control) %>%
+    dplyr::summarize(library_size=n(), .groups="keep") %>%
+    dplyr::ungroup() %>%
+    dplyr::group_by_at(normalize_within_cols) %>%
+    dplyr::arrange(tlx_group, tlx_control, tlx_sample) %>%
+    dplyr::mutate(library_factor=normalization_target_fun(library_size)/library_size, library_target=ifelse(normalization_target_fun(library_size)==library_size,normalization_target, "")) %>%
+    dplyr::ungroup()
+  groupsizes_df = libsizes_df %>%
+    dplyr::group_by_at(group_cols) %>%
+    dplyr::summarize(library_groupsize=sum(library_size*library_factor)) %>%
+    dplyr::ungroup() %>%
+    dplyr::group_by_at(normalize_between_cols) %>%
+    dplyr::mutate(library_groupfactor=normalization_target_fun(library_groupsize)/library_groupsize) %>%
+    data.frame()
+  libsizes_df = libsizes_df %>%
+    dplyr::inner_join(groupsizes_df, by=group_cols) %>%
+    dplyr::mutate(library_factor.adj=library_factor*library_groupfactor)
+  writeLines(knitr::kable(libsizes_df))
+
+
+  # Calculate coverage for each sample
+  writeLines("Calculating each sample coverage...")
+  tlxcov_df = tlx_df %>%
+    dplyr::group_by(tlx_group, tlx_group_i, tlx_sample, tlx_control, tlx_path, tlx_strand) %>%
+    dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>%
+    dplyr::ungroup() %>%
+    dplyr::inner_join(libsizes_df %>% dplyr::select(tlx_sample, library_factor), by="tlx_sample") %>%
+    dplyr::mutate(tlxcov_pileup.norm=tlxcov_pileup*library_factor)
+
+  # Summarize group coverage by summing all samples in the group with each sample having a weight decided by library size
+  writeLines("Adding up coverages from sample(s)...")
+  zret = tlxcov_df %>%
+    dplyr::group_by_at(group_cols) %>%
+    dplyr::do((function(z){
+      z
+      z_ranges = GenomicRanges::makeGRangesFromDataFrame(z %>% dplyr::mutate(seqnames=tlxcov_chrom, start=tlxcov_start, end=tlxcov_end), ignore.strand=T, keep.extra.columns=T)
+      cov_ranges = as(GenomicRanges::coverage(z_ranges, weight=z$tlxcov_pileup.norm), "GRanges")
+      ret_df = as.data.frame(cov_ranges) %>%
+        dplyr::rename(tlxcov_chrom="seqnames", tlxcov_start="start", tlxcov_end="end", tlxcov_pileup="score") %>%
+        dplyr::select(matches("tlxcov_"))
+      ret_df
+    })(.)) %>%
+    dplyr::ungroup()
 }
 
 #' @export
@@ -551,26 +684,3 @@ plot_logos_coordinates = function(fastq_paths, sample_names, widths=list("Beginn
   }
   plots
 }
-
-
-# fastq_paths = list.files(path="~/Workspace/wei_pnas2018_htgts/fastq", pattern=".*_1_.*.fastq", full.names=T)
-# sample_names = paste0(gsub("_.*", "", basename(fastq_paths)), "\n", gsub("_", "\n", gsub(".*_1_|.fastq|_Exp\\w", "", basename(fastq_paths))))
-# pp = plot_logos_tails(fastq_paths, sample_names)
-# pdf("~/Workspace/wei_pnas2018_htgts/htgts_logo.pdf", width=8.27, height=11.69)
-# plot_grid(plotlist=pp, ncol=1)
-# dev.off()
-#
-# fastq_paths = list.files(path="~/Workspace/B400_014/preprocess/multx", pattern=".*014_R1.fq.gz", full.names=T)
-# sample_names = gsub("_.*", "", basename(fastq_paths))
-# pp = plot_logos_tails(fastq_paths, sample_names)
-# pdf("~/Workspace/B400_014/htgts_logo2.pdf", width=8.27, height=11.69)
-# plot_grid(plotlist=pp, ncol=1)
-# dev.off()
-#
-#
-# fastq_paths = list.files(path="~/Workspace/B400_011/preprocess/multx", pattern=".*011_R1.fq.gz", full.names=T)
-# sample_names = gsub("_.*", "", basename(fastq_paths))
-# pp = plot_logos_tails(fastq_paths, sample_names)
-# pdf("~/Workspace/B400_011/htgts_logo.pdf", width=8.27, height=11.69)
-# plot_grid(plotlist=pp, ncol=1)
-# dev.off()
