@@ -78,6 +78,19 @@ leftJoinByOverlaps = function(query, subject, ...) {
   result_df
 }
 
+#' @export
+liftOverRanges = function(ranges, chain) {
+  chain = rtracklayer::import.chain("genomes/mm9/mm9ToMm10.over.chain")
+  ranges$ranges_id = 1:length(ranges)
+  as.data.frame(unlist(rtracklayer::liftOver(ranges, chain))) %>%
+    dplyr::group_by(ranges_id) %>%
+    dplyr::mutate(start=max(start), end=min(end)) %>%
+    dplyr::ungroup() %>%
+    dplyr::distinct(ranges_id, .keep_all=T) %>%
+    dplyr::select(-ranges_id) %>%
+    GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns=T)
+}
+
 
 #' @export
 bed_read = function(path) {
@@ -128,6 +141,45 @@ get_blat = function(sequences, database, minscore=20, tmp_dir="tmp") {
     dplyr::inner_join(sequences_df, by="blat_query_name")
 }
 
+get_bowtie = function(sequences, database, threads=30, tmp_dir="tmp") {
+  if(!file.exists(database)) { stop(paste0("Database file '", database, "' doesn't exist")) }
+
+  database_name = gsub("\\.[^.]+", "", database)
+  if(!file.exists(paste0(database_name, ".1.ebwt"))) {
+    cmd_makedb = paste("bowtie-build --threads", threads, database, database_name)
+    system(cmd_makedb)
+  }
+
+  dir.create(tmp_dir, recursive=T, showWarnings=F)
+  fasta_path = file.path(tmp_dir, basename(tempfile()))
+  sam_path = paste0(fasta_path, ".sam")
+  bam_path = paste0(fasta_path, ".bam")
+  sequences_df = data.frame(bowtie_qid=paste0("seq", 1:length(sequences)), bowtie_sequence=sequences, stringsAsFactors=F)
+  sequences_reduced_df = sequences_df %>% dplyr::distinct(bowtie_sequence, .keep_all=T)
+  writeLines(paste0(">", sequences_reduced_df$bowtie_qid, "\n", sequences_reduced_df$bowtie_sequence), con=fasta_path)
+
+  cmd = paste0("bowtie --threads ", threads, " --tryhard --all -v 3 --seedlen 5 -f --sam --no-unal ", database_name, " ", fasta_path, " > ", sam_path)
+  system(cmd)
+
+  sort_cmd = paste0("samtools sort -@ ", threads, " ", sam_path, " > ", bam_path)
+  system(sort_cmd)
+
+  # Analyze genome position and give final output
+  primers_alignments_param = Rsamtools::ScanBamParam(tag=c("AS", "NM"), what=c("qname", "rname", "strand", "flag", "pos", "qwidth",  "cigar", "mapq", "qual"))
+  primers_alignments = lapply(Rsamtools::scanBam(bam_path, param=primers_alignments_param), function(z) {
+    d = data.frame(z[names(z)!="tag"])
+    d$bowtie_mismatches=z$tag$NM
+    cbind(d, do.call(rbind, lapply(d$flag, SamSeq::samFlags))) })[[1]] %>%
+    dplyr::mutate(bowtie_qid=qname, bowtie_end=pos+qwidth-1, bowtie_primary=!NOT_PRIMARY_ALIGNMENT) %>%
+    dplyr::filter(!READ_UNMAPPED & rname!="chrM") %>%
+    dplyr::select(bowtie_qid, bowtie_chrom=rname, bowtie_strand=strand, bowtie_start=pos, bowtie_end, bowtie_flag=flag, bowtie_cigar=cigar, bowtie_length=qwidth, bowtie_mismatches, bowtie_primary) %>%
+    dplyr::mutate(bowtie_qid=as.character(bowtie_qid), bowtie_chrom=as.character(bowtie_chrom), bowtie_strand=as.character(bowtie_strand), bowtie_start=as.numeric(bowtie_start), bowtie_end=as.numeric(bowtie_end), bowtie_flag=as.numeric(bowtie_flag), bowtie_cigar=as.character(bowtie_cigar)) %>%
+    dplyr::inner_join(sequences_reduced_df, by="bowtie_qid") %>%
+    dplyr::select(-bowtie_qid)
+
+  primers_alignments
+}
+
 get_blast = function(sequences, database, word_size=4, perc_identity=100, tmp_dir="tmp") {
   if(!file.exists(database)) { stop(paste0("Database file '", database, "' doesn't exist")) }
 
@@ -138,8 +190,6 @@ get_blast = function(sequences, database, word_size=4, perc_identity=100, tmp_di
   }
 
   dir.create(tmp_dir, recursive=T, showWarnings=F)
-
-
   fasta_path = file.path(tmp_dir, basename(tempfile()))
   sequences_df = data.frame(blast_qseqid=paste0("seq", 1:length(sequences)), blast_sequence=sequences, stringsAsFactors=F)
   writeLines(paste0(">", sequences_df$blast_query_name, "\n", sequences_df$blast_sequence), con=fasta_path)

@@ -43,18 +43,30 @@ tlx_blank = function() {
 
 #' @export
 tlx_read = function(path, sample, group="", group_i=1, control=F) {
-  readr::read_tsv(path, comment="#", skip=16, col_names=names(tlx_cols()$cols), col_types=tlx_cols()) %>%
+  tlx_single_df = readr::read_tsv(path, comment="#", skip=1, col_names=names(tlx_cols()$cols), col_types=tlx_cols()) %>%
     dplyr::mutate(tlx_strand=ifelse(Strand<0, "-", "+")) %>%
     dplyr::mutate(Seq_length=nchar(Seq), tlx_sample=sample, tlx_path=path, tlx_group=group, tlx_group_i=group_i, tlx_control=control)
 }
 
 #' @export
-tlx_read_many = function(samples_df) {
+tlx_read_many = function(samples_df, threads=1) {
   tlx_df.all = data.frame()
-  for(f in 1:nrow(samples_df)) {
-    log("Reading tlx file ", f, "/", nrow(samples_df), ": ",  samples_df$path[f])
-    tlx_df.f = tlx_read(samples_df$path[f], sample=samples_df$sample[f], control=samples_df$control[f], group=samples_df$group[f], group_i=samples_df$group_i[f])
-    tlx_df.all = dplyr::bind_rows(tlx_df.all, tlx_df.f)
+
+  if(threads > 1) {
+    doParallel::registerDoParallel(cores=2)
+    tlx_df.all = foreach(f=1:nrow(samples_df)) %dopar% {
+      df = tlx_read(path=samples_df$path[f], sample=samples_df$sample[f], control=samples_df$control[f], group=samples_df$group[f], group_i=samples_df$group_i[f])
+      log("Read tlx file ", f, "/", nrow(samples_df), ": ",  samples_df$path[f])
+      df
+    }
+    log("Merging TLX files...")
+    tlx_df.all = do.call(dplyr::bind_rows, tlx_df.all)
+  } else {
+    for(f in 1:nrow(samples_df)) {
+      log("Reading tlx file ", f, "/", nrow(samples_df), ": ",  samples_df$path[f])
+      tlx_df.f = tlx_read(path=samples_df$path[f], sample=samples_df$sample[f], control=samples_df$control[f], group=samples_df$group[f], group_i=samples_df$group_i[f])
+      tlx_df.all = dplyr::bind_rows(tlx_df.all, tlx_df.f)
+    }
   }
 
   tlx_df.all
@@ -188,6 +200,7 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, normalize_within=NULL, 
   validate_normalization_target(normalization_target)
 
   tlx_coverage_ = function(x, extsize, exttype) {
+    xx<<-x
     validate_exttype(exttype)
 
     if(exttype[1]=="along") {
@@ -228,7 +241,7 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, normalize_within=NULL, 
     dplyr::ungroup() %>%
     dplyr::mutate(tlx_control=ifelse(tlx_control, "Control", "Treatment")) %>%
     dplyr::group_by(tlx_sample, tlx_group, tlx_control) %>%
-    dplyr::summarize(library_size=n(), .groups="keep") %>%
+    dplyr::summarize(library_size=dplyr::n(), .groups="keep") %>%
     dplyr::ungroup() %>%
     dplyr::group_by_at(normalize_within_cols) %>%
     dplyr::arrange(tlx_group, tlx_control, tlx_sample) %>%
@@ -348,22 +361,17 @@ tlx_mark_dust = function(tlx_df, tmp_dir="tmp") {
 }
 
 #' @export
-tlx_identify_baits = function(tlx_df, breaksite_size=19, genome_fasta="") {
+tlx_identify_baits = function(tlx_df, genome_fasta="") {
   if(is.null(tlx_df) || nrow(tlx_df)==0) {
     return(data.frame(bait_sample=NA, bait_chrom=NA, bait_strand=NA, bait_start=NA, bait_end=NA) %>% dplyr::slice(0))
   }
 
   baits_df = tlx_df %>%
-    dplyr::group_by(tlx_group, tlx_sample, B_Rname, B_Strand) %>%
-    dplyr::do((function(z){
-      misprimed_max = max(z$misprimed-z$uncut)
-      if(z$B_Strand[1]<0) bait_start = unique(z$B_Rstart + z$misprimed - misprimed_max-2)
-      else bait_start = unique(z$B_Rend - z$misprimed + misprimed_max)
-      data.frame(bait_start=bait_start, bait_end=bait_start+breaksite_size - 1)
-    })(.)) %>%
-    dplyr::mutate(bait_strand=ifelse(B_Strand<0, "-", "+")) %>%
+    dplyr::group_by(tlx_group, tlx_sample, tlx_bait_chrom, tlx_bait_strand, tlx_bait_start, tlx_bait_end) %>%
+    dplyr::summarize(n=dplyr::n()) %>%
     dplyr::ungroup() %>%
-    dplyr::select(bait_group=tlx_group, bait_sample=tlx_sample, bait_chrom=B_Rname, bait_strand, bait_start, bait_end)
+    dplyr::arrange(dplyr::desc(n)) %>%
+    dplyr::select(bait_group=tlx_group, bait_sample=tlx_sample, bait_chrom=tlx_bait_chrom, bait_strand=tlx_bait_strand, bait_start=tlx_bait_start, bait_end=tlx_bait_end)
 
   if(genome_fasta!="") {
     if(!file.exists(genome_fasta)) {
@@ -492,27 +500,27 @@ tlx_test_hits = function(tlx_df, hits_ranges, paired_samples=T, paired_controls=
 }
 
 #' @export
-tlx_mark_bait_chromosome = function(tlx_df) {
+tlx_extract_bait = function(tlx_df, bait_size, bait_region) {
   tlx_df %>%
-    dplyr::select(-dplyr::matches("tlx_is_bait_chromosome")) %>%
-    dplyr::mutate(tlx_is_bait_chromosome=B_Rname==Rname)
+    dplyr::select(-dplyr::matches("^(tlx_bait_chrom|tlx_bait_start|tlx_bait_end|tlx_bait_strand|tlx_is_bait_junction)$")) %>%
+    dplyr::group_by(tlx_group, tlx_sample, B_Rname, B_Strand) %>%
+    dplyr::mutate(misprimed_max=max(misprimed-uncut)) %>%
+    dplyr::mutate(tlx_bait_start=ifelse(B_Strand<0, B_Rstart + misprimed - misprimed_max-2, B_Rend - misprimed + misprimed_max)) %>%
+    dplyr::mutate(tlx_bait_end=tlx_bait_start+bait_size - 1) %>%
+    dplyr::mutate(tlx_bait_chrom=B_Rname, tlx_bait_strand=ifelse(B_Strand<0, "-", "+")) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(tlx_is_bait_chrom=B_Rname==Rname) %>%
+    dplyr::mutate(tlx_is_bait_junction=B_Rname==Rname & (abs(tlx_bait_start-Junction)<=bait_region/2 | abs(tlx_bait_end-Junction)<=bait_region/2))
 }
 
 #' @export
-tlx_mark_bait_junctions = function(tlx_df, bait_region) {
-  tlx_df %>%
-    dplyr::select(-dplyr::matches("tlx_is_bait_junction")) %>%
-    dplyr::mutate(tlx_is_bait_junction=B_Rname==Rname & (abs(B_Rstart-Rstart)<=bait_region/2 | abs(Rend-B_Rend)<=bait_region/2))
-}
-
-#' @export
-tlx_mark_offtargets = function(tlx_df, offtarget2bait_df) {
+tlx_mark_offtargets = function(tlx_df, offtarget2bait_df, offtarget_region=1000, bait_region=1000) {
   # @todo: Change 100 to something meaningful?
   tlx_df$tlx_id = 1:nrow(tlx_df)
-  tlx_bait_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df %>% dplyr::mutate(seqnames=B_Rname, start=B_Rstart-50000, end=B_Rend+50000), keep.extra.columns=T, ignore.strand=T)
-  tlx_junc_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df %>% dplyr::mutate(seqnames=Rname, start=Rstart-50000, end=Rend+50000), keep.extra.columns=T, ignore.strand=T)
-  offtarget2bait_bait_ranges = GenomicRanges::makeGRangesFromDataFrame(offtarget2bait_df %>% dplyr::mutate(seqnames=bait_chrom, start=bait_start, end=bait_end), ignore.strand=T)
-  offtarget2bait_offt_ranges = GenomicRanges::makeGRangesFromDataFrame(offtarget2bait_df %>% dplyr::mutate(seqnames=offtarget_chrom, start=offtarget_start, end=offtarget_end), ignore.strand=T)
+  tlx_bait_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df %>% dplyr::mutate(seqnames=tlx_bait_chrom, start=tlx_bait_start, end=tlx_bait_end), keep.extra.columns=T, ignore.strand=T)
+  tlx_junc_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df %>% dplyr::mutate(seqnames=Rname, start=Junction, end=Junction), keep.extra.columns=T, ignore.strand=T)
+  offtarget2bait_bait_ranges =  GenomicRanges::makeGRangesFromDataFrame(offtarget2bait_df %>% dplyr::mutate(seqnames=bait_chrom, start=bait_start-bait_region/2, end=bait_end+bait_region/2), ignore.strand=T)
+  offtarget2bait_offt_ranges = GenomicRanges::makeGRangesFromDataFrame(offtarget2bait_df %>% dplyr::mutate(seqnames=offtarget_chrom, start=offtarget_start-offtarget_region/2, end=offtarget_end+offtarget_region/2), ignore.strand=T)
 
   tlx_offtarget_ids = as.data.frame(IRanges::findOverlaps(tlx_bait_ranges, offtarget2bait_bait_ranges)) %>%
     dplyr::rename(tlx_id="queryHits", o2b_id="subjectHits") %>%
