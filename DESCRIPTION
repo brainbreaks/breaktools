@@ -23,5 +23,5 @@ Imports:
 	rstatix (>= 0.7.0),
 	bedr (>= 1.0.7),
 	reshape2 (>= 1.4.4),
-	bedr (>= 0.6.29)
+	bedr (>= 0.6.29),
 	ggseqlogo (>=0.1)
