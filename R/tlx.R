@@ -1,5 +1,5 @@
 validate_group = function(group) {
-  valid_group = c("none", "group", "sample")
+  valid_group = c("all", "group", "sample")
   if(!(group %in% valid_group)) { stop(simpleError(paste0("group should be one of: ", paste(valid_group, collapse=", "), " (Actual:", group, ")"))) }
 }
 
@@ -40,6 +40,14 @@ tlx_blank = function() {
     dplyr::mutate(tlx_is_bait_chromosome=NA, tlx_is_bait_junction=NA, tlx_is_offtarget=NA) %>%
     dplyr::slice(0)
 }
+
+tlx_read_samples = function(annotation_path, samples_path) {
+  samples_df = readr::read_tsv(annotation_path, comment="#") %>%
+    dplyr::mutate(path=file.path(samples_path, path)) %>%
+    dplyr::mutate(tlx_exists=file.exists(path))
+  samples_df
+}
+
 
 #' @export
 tlx_read = function(path, sample, group="", group_i=1, control=F) {
@@ -87,11 +95,7 @@ tlx_generate_filename_col = function(df, include_sample=F, include_group=F, incl
   if(include_sample) filenames_df$sample = df$tlx_sample
   if(include_treatment) filenames_df$control = ifelse(df$tlx_control, "ctrl", "trmnt")
   if(include_strand) filenames_df$strand = map_strand[df$tlx_strand]
-  table(filenames_df$group)
-  table(df$tlx_group)
-  filenames_df %>% dplyr::distinct()
-  # generated_path = apply(filenames_df, 1, paste, collapse="_")
-  # generated_path = unlist(purrr::pmap(filenames_df, paste, sep = '_'))
+
   generated_path = do.call(paste, c(filenames_df, sep = "_"))
   unique_generated_path = unique(generated_path)
   map_unique_generated_path = gsub("[/.]", "-", unique_generated_path)
@@ -102,17 +106,16 @@ tlx_generate_filename_col = function(df, include_sample=F, include_group=F, incl
 }
 
 #' @export
-tlx_write_bedgraph = function(tlx_df, path, group, exttype, extsize, normalize_within=NULL, normalize_between=NULL, normalization_target="smallest", split_strand=F) {
+tlx_write_bedgraph = function(tlx_df, path, group, exttype, extsize, normalize_within=NULL, normalize_between=NULL, normalization_target="smallest", ignore.strand=T) {
   writeLines("Calculating coverage...")
-  tlxcov_df = tlx_coverage(tlx_df, group=group, exttype=exttype, extsize=extsize, normalize_within=normalize_within, normalize_between=normalize_between, normalization_target=normalization_target, ignore.strand=!split_strand) %>%
+  tlxcov_df = tlx_coverage(tlx_df, group=group, exttype=exttype, extsize=extsize, normalize_within=normalize_within, normalize_between=normalize_between, normalization_target=normalization_target, ignore.strand=ignore.strand) %>%
     dplyr::arrange(tlxcov_chrom, tlxcov_start)
 
   writeLines("calculating filenames(s)...")
-  if(group=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=split_strand))
-  if(group=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=split_strand))
-  if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=split_strand))
-  if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=split_strand))
-  if(split_strand) tlxcov_df = tlxcov_df %>% dplyr::mutate(tlxcov_pileup=ifelse(tlx_strand=="+", 1, -1)*tlxcov_pileup)
+  if(group=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, ignore.strand=ignore.strand))
+  if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, ignore.strand=ignore.strand))
+  if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, ignore.strand=ignore.strand))
+  if(!ignore.strand) tlxcov_df = tlxcov_df %>% dplyr::mutate(tlxcov_pileup=ifelse(tlx_strand=="+", 1, -1)*tlxcov_pileup)
 
 
   writeLines("Writing bedgraph file(s)...")
@@ -130,7 +133,7 @@ tlx_write_bedgraph = function(tlx_df, path, group, exttype, extsize, normalize_w
 }
 
 #' @export
-tlx_write_bed = function(tlx_df, path, group, split_strand=F) {
+tlx_write_bed = function(tlx_df, path, group, ignore.strand=T) {
   validate_group_within(group)
 
   tlx_bed_df = tlx_df %>%
@@ -138,9 +141,9 @@ tlx_write_bed = function(tlx_df, path, group, split_strand=F) {
     # dplyr::mutate(start=ifelse(Strand=="-1", Junction-1, Junction), end=ifelse(Strand=="-1", Junction, Junction+1))
 
   writeLines("calculating filenames(s)...")
-  if(group=="all") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=split_strand))
-  if(group=="group") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=split_strand))
-  if(group=="sample") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=split_strand))
+  if(group=="all") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, ignore.strand=ignore.strand))
+  if(group=="group") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, ignore.strand=ignore.strand))
+  if(group=="sample") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, ignore.strand=ignore.strand))
 
   writeLines("Writing bedgraph file(s)...")
   if(!dir.exists(path)) dir.create(path, recursive=T)
@@ -191,9 +194,9 @@ tlx_write_bed = function(tlx_df, path, group, split_strand=F) {
 #' @examples
 #' no examples yet
 tlx_coverage = function(tlx_df, group, extsize, exttype, normalize_within=NULL, normalize_between=NULL, normalization_target="smallest", ignore.strand=T) {
-  if(is.null(normalize_within)) normalize_within = group
-  if(is.null(normalize_between)) normalize_between = group
-  validate_group_within(group)
+  if(is.null(normalize_within)) normalize_within = ifelse(group=="sample", "none", group)
+  if(is.null(normalize_between)) normalize_between = ifelse(group=="sample", "none", group)
+  validate_group(group)
   validate_group_within(normalize_within)
   validate_group_within(normalize_between)
   validate_exttype(exttype)
@@ -225,22 +228,21 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, normalize_within=NULL, 
   if(group %in% c("sample", "none")) group_cols = c("tlx_group", "tlx_group_i", "tlx_control", "tlx_sample")
   if(normalize_within=="all") normalize_within_cols = c("tlx_control")
   if(normalize_within=="group") normalize_within_cols = c("tlx_group", "tlx_control")
-  if(normalize_within %in% "none") normalize_within_cols = c("tlx_sample", "tlx_control")
+  if(normalize_within=="none") normalize_within_cols = c("tlx_sample", "tlx_control")
   if(normalize_between=="all") normalize_between_cols = c()
   if(normalize_between=="group") normalize_between_cols = setdiff(group_cols, c("tlx_control"))
-  if(normalize_between %in% "none") normalize_between_cols = group_cols
+  if(normalize_between=="none") normalize_between_cols = group_cols
 
   group_stramd_cols = group_cols
   if(!ignore.strand) group_stramd_cols = c(group_cols, "tlx_strand")
 
   normalization_target_fun = c("smallest"=min, "largest"=max, "mean"=mean, "median"=median)[[normalization_target]]
-
   # Calculate library sizes for each sample and a normalization factor according to normalize argument
   writeLines("Calculating normalization factor for sample...")
   libsizes_df = tlx_df %>%
     dplyr::ungroup() %>%
     dplyr::mutate(tlx_control=ifelse(tlx_control, "Control", "Treatment")) %>%
-    dplyr::group_by(tlx_sample, tlx_group, tlx_control) %>%
+    dplyr::group_by(tlx_sample, tlx_group, tlx_group_i, tlx_control) %>%
     dplyr::summarize(library_size=dplyr::n(), .groups="keep") %>%
     dplyr::ungroup() %>%
     dplyr::group_by_at(normalize_within_cols) %>%
@@ -626,7 +628,6 @@ tlx_macs2 = function(tlx_df, effective_size, maxgap=NULL, qvalue=0.01, pileup=1,
         readr::write_tsv(file=f_control_bed, na="", col_names=F)
 
       log("Running MACS with control")
-      print("Asdad")
       macs_df = macs2(name=basename(f_input_bed), sample=f_input_bed, control=f_control_bed, maxgap=maxgap, effective_size=length(unique(tlx_df.gr$tlx_path))*effective_size, extsize=extsize, qvalue=qvalue, slocal=slocal, llocal=llocal, output_dir=dirname(f_input_bed))
     } else {
       log("Running MACS without control")
