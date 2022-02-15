@@ -101,6 +101,10 @@ bed_read = function(path) {
 
 #' @export
 get_seq = function(fasta, ranges) {
+  if(!check.binary("bedtools")) {
+    stop("bedtools executible not found")
+  }
+
   bed_df = data.frame(
     chr=as.character(GenomicRanges::seqnames(ranges)),
     start=as.numeric(GenomicRanges::start(ranges))-1,
@@ -117,6 +121,16 @@ get_seq = function(fasta, ranges) {
 
 #' @export
 get_blat = function(sequences, database, minscore=20, tmp_dir="tmp") {
+  if(!check.binary("blat")) {
+    stop("blat executible not found")
+  }
+  if(!check.binary("bowtie")) {
+    stop("bowtie executible not found")
+  }
+  if(!check.binary("samtools")) {
+    stop("samtools executible not found")
+  }
+
   if(!file.exists(database)) { stop(paste0("Database file '", database, "' doesn't exist")) }
 
   dir.create(tmp_dir, recursive=T, showWarnings=F)
@@ -141,7 +155,14 @@ get_blat = function(sequences, database, minscore=20, tmp_dir="tmp") {
     dplyr::inner_join(sequences_df, by="blat_query_name")
 }
 
+#' @export
 get_bowtie = function(sequences, database, threads=30, tmp_dir="tmp") {
+  if(!check.binary("bowtie")) {
+    stop("bowtie executible not found")
+  }
+  if(!check.binary("samtools")) {
+    stop("samtools executible not found")
+  }
   if(!file.exists(database)) { stop(paste0("Database file '", database, "' doesn't exist")) }
 
   database_name = gsub("\\.[^.]+", "", database)
@@ -180,7 +201,11 @@ get_bowtie = function(sequences, database, threads=30, tmp_dir="tmp") {
   primers_alignments
 }
 
+#' @export
 get_blast = function(sequences, database, word_size=4, perc_identity=100, tmp_dir="tmp") {
+  if(!check.binary("blastn")) {
+    stop("blast executible not found")
+  }
   if(!file.exists(database)) { stop(paste0("Database file '", database, "' doesn't exist")) }
 
   database_name = gsub("\\.[^.]+", "", database)

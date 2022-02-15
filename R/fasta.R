@@ -1,3 +1,4 @@
+#' @export
 fasta_duplicates_count = function(paths, breakpoints=c(1, 10, 50, 100, 1000, 10000), palette=NULL, plot=T) {
   duplicates_sumdf = data.frame(fasta_path=paths) %>%
     dplyr::mutate(fasta_name=basename(fasta_path)) %>%

@@ -41,6 +41,7 @@ tlx_blank = function() {
     dplyr::slice(0)
 }
 
+#' @export
 tlx_read_samples = function(annotation_path, samples_path) {
   samples_df = readr::read_tsv(annotation_path, comment="#") %>%
     dplyr::mutate(path=file.path(samples_path, path)) %>%
@@ -112,9 +113,9 @@ tlx_write_bedgraph = function(tlx_df, path, group, exttype, extsize, normalize_w
     dplyr::arrange(tlxcov_chrom, tlxcov_start)
 
   writeLines("calculating filenames(s)...")
-  if(group=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, ignore.strand=ignore.strand))
-  if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, ignore.strand=ignore.strand))
-  if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, ignore.strand=ignore.strand))
+  if(group=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=!ignore.strand))
+  if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=!ignore.strand))
+  if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=!ignore.strand))
   if(!ignore.strand) tlxcov_df = tlxcov_df %>% dplyr::mutate(tlxcov_pileup=ifelse(tlx_strand=="+", 1, -1)*tlxcov_pileup)
 
 
@@ -141,9 +142,9 @@ tlx_write_bed = function(tlx_df, path, group, ignore.strand=T) {
     # dplyr::mutate(start=ifelse(Strand=="-1", Junction-1, Junction), end=ifelse(Strand=="-1", Junction, Junction+1))
 
   writeLines("calculating filenames(s)...")
-  if(group=="all") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, ignore.strand=ignore.strand))
-  if(group=="group") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, ignore.strand=ignore.strand))
-  if(group=="sample") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, ignore.strand=ignore.strand))
+  if(group=="all") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=!ignore.strand))
+  if(group=="group") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=!ignore.strand))
+  if(group=="sample") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=!ignore.strand))
 
   writeLines("Writing bedgraph file(s)...")
   if(!dir.exists(path)) dir.create(path, recursive=T)
