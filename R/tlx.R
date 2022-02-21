@@ -20,6 +20,18 @@ validate_exttype = function(exttype) {
   if(!(exttype %in% valid_exttype)) { stop(simpleError(paste0("exttype should be one of: ", paste(valid_exttype, collapse=", "), " (Actual:", exttype, ")"))) }
 }
 
+tlx_get_group_cols = function(group, ignore.strand=T, ignore.control=F) {
+  validate_group(group)
+  if(group=="all") group_cols = c()
+  if(group=="group") group_cols = c("tlx_group")
+  if(group %in% c("sample", "none")) group_cols = c("tlx_group", "tlx_group_i", "tlx_sample")
+
+  if(!ignore.control) group_cols = c(group_cols, "tlx_control")
+  if(!ignore.strand) group_cols = c(group_cols, "tlx_strand")
+
+  return(group_cols)
+}
+
 #' @export
 tlx_cols = function() {
   readr::cols(
@@ -107,15 +119,21 @@ tlx_generate_filename_col = function(df, include_sample=F, include_group=F, incl
 }
 
 #' @export
-tlx_write_bedgraph = function(tlx_df, path, group, exttype, extsize, normalize_within=NULL, normalize_between=NULL, normalization_target="smallest", ignore.strand=T) {
+tlx_write_bedgraph = function(tlx_df, path, group, exttype, extsize, normalize_within=NULL, normalize_between=NULL, normalization_target="smallest", ignore.strand=T, only.baitchrom=F) {
   writeLines("Calculating coverage...")
-  tlxcov_df = tlx_coverage(tlx_df, group=group, exttype=exttype, extsize=extsize, normalize_within=normalize_within, normalize_between=normalize_between, normalization_target=normalization_target, ignore.strand=ignore.strand) %>%
+  tlxcov_df = tlx_coverage(tlx_df, group=group, exttype=exttype, extsize=extsize, normalize_within=normalize_within, normalize_between=normalize_between, normalization_target=normalization_target, ignore.strand=ignore.strand, only.baitchrom=only.baitchrom) %>%
     dplyr::arrange(tlxcov_chrom, tlxcov_start)
 
+  tlxcov_write_bedgraph(tlxcov_df=tlxcov_df, path=path, group=group, ignore.strand=ignore.strand)
+}
+
+#' @export
+#'
+tlxcov_write_bedgraph = function(tlxcov_df, path, group, ignore.strand=T) {
   writeLines("calculating filenames(s)...")
-  if(group=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=!ignore.strand))
-  if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=!ignore.strand))
-  if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=!ignore.strand))
+  if(group=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(path, "/", tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph"))
+  if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(path, "/", tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph"))
+  if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(path, "/", tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=!ignore.strand), ".bedgraph"))
   if(!ignore.strand) tlxcov_df = tlxcov_df %>% dplyr::mutate(tlxcov_pileup=ifelse(tlx_strand=="+", 1, -1)*tlxcov_pileup)
 
 
@@ -125,12 +143,59 @@ tlx_write_bedgraph = function(tlx_df, path, group, exttype, extsize, normalize_w
     dplyr::group_by(g) %>%
     dplyr::do((function(z){
       z.out = z %>% dplyr::select(tlxcov_chrom, tlxcov_start, tlxcov_end, tlxcov_pileup)
-      z.path = file.path(path, paste0(z$g[1], ".bedgraph"))
+      z.path = z$g[1]
       writeLines(paste0("Writing to file '", z.path, "'"))
       readr::write_tsv(z.out, file=z.path, col_names=F)
       data.frame()
     })(.))
-  return(0)
+
+  tlxcov_df %>%
+    dplyr::select(bedgraph_path=g, dplyr::matches("tlx_group|tlx_sample|tlx_control")) %>%
+    dplyr::distinct(bedgraph_path, .keep_all=T)
+}
+
+#' @export
+tlx_libfactors = function(tlx_df, group, normalize_within, normalize_between, normalization_target="smallest")
+{
+  if(is.null(normalize_within)) normalize_within = ifelse(group=="sample", "none", group)
+  if(is.null(normalize_between)) normalize_between = ifelse(group=="sample", "none", group)
+  validate_group(group)
+  validate_group_within(normalize_within)
+  validate_group_within(normalize_between)
+  validate_normalization_target(normalization_target)
+
+  group_cols = tlx_get_group_cols(group)
+  if(normalize_within=="all") normalize_within_cols = c("tlx_control")
+  if(normalize_within=="group") normalize_within_cols = c("tlx_group", "tlx_control")
+  if(normalize_within=="none") normalize_within_cols = c("tlx_sample", "tlx_control")
+  if(normalize_between=="all") normalize_between_cols = c()
+  if(normalize_between=="group") normalize_between_cols = setdiff(group_cols, "tlx_control")
+  if(normalize_between=="none") normalize_between_cols = group_cols
+
+  normalization_target_fun = c("smallest"=min, "largest"=max, "mean"=mean, "median"=median)[[normalization_target]]
+  # Calculate library sizes for each sample and a normalization factor according to normalize argument
+  libsizes_df = tlx_df %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(tlx_control=ifelse(tlx_control, "Control", "Treatment")) %>%
+    dplyr::group_by(tlx_sample, tlx_group, tlx_group_i, tlx_control) %>%
+    dplyr::summarize(library_size=dplyr::n(), .groups="keep") %>%
+    dplyr::ungroup() %>%
+    dplyr::group_by_at(normalize_within_cols) %>%
+    dplyr::arrange(tlx_group, tlx_control, tlx_sample) %>%
+    dplyr::mutate(library_factor=normalization_target_fun(library_size)/library_size, library_target=ifelse(normalization_target_fun(library_size)==library_size,normalization_target, "")) %>%
+    dplyr::ungroup()
+  groupsizes_df = libsizes_df %>%
+    dplyr::group_by_at(group_cols) %>%
+    dplyr::summarize(library_groupsize=sum(library_size*library_factor)) %>%
+    dplyr::ungroup() %>%
+    dplyr::group_by_at(normalize_between_cols) %>%
+    dplyr::mutate(library_groupfactor=normalization_target_fun(library_groupsize)/library_groupsize) %>%
+    data.frame()
+  libsizes_df = libsizes_df %>%
+    dplyr::inner_join(groupsizes_df, by=group_cols) %>%
+    dplyr::mutate(library_factor.adj=library_factor*library_groupfactor)
+
+  libsizes_df
 }
 
 #' @export
@@ -194,94 +259,63 @@ tlx_write_bed = function(tlx_df, path, group, ignore.strand=T) {
 #' @return A data frame with coverages for each sample or group
 #' @examples
 #' no examples yet
-tlx_coverage = function(tlx_df, group, extsize, exttype, normalize_within=NULL, normalize_between=NULL, normalization_target="smallest", ignore.strand=T) {
-  if(is.null(normalize_within)) normalize_within = ifelse(group=="sample", "none", group)
-  if(is.null(normalize_between)) normalize_between = ifelse(group=="sample", "none", group)
+#' @export
+tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ignore.strand=T) {
   validate_group(group)
-  validate_group_within(normalize_within)
-  validate_group_within(normalize_between)
   validate_exttype(exttype)
-  validate_normalization_target(normalization_target)
+
+  if(is.null(libfactors_df)) {
+    libfactors_df = tlx_df %>%
+      dplyr::mutate(library_factor=1) %>%
+      dplyr::distinct(tlx_sample, library_factor)
+  }
+
+  if(!all(tlx_df$tlx_sample %in% libfactors_df$tlx_sample)) {
+    stop(paste0("Samples are missing from libfactors_df data.frame: ", paste(setdiff(tlx_df$tlx_sample, libfactors_df$tlx_sample), collapsse=", ")))
+  }
 
   tlx_coverage_ = function(x, extsize, exttype) {
-    xx<<-x
-    validate_exttype(exttype)
-
     if(exttype[1]=="along") {
-      x_ranges  = GenomicRanges::makeGRangesFromDataFrame(x %>% dplyr::mutate(seqnames=Rname, sstart=ifelse(Strand=="-1", Junction-extsize, Junction-1), end=ifelse(Strand=="-1", Junction, Junction+extsize-1)), ignore.strand=T, keep.extra.columns=T)
+      x_ranges  = GenomicRanges::makeGRangesFromDataFrame(x %>% dplyr::mutate(seqnames=Rname, sstart=ifelse(Strand=="-1", Junction-extsize, Junction-1), end=ifelse(Strand=="-1", Junction, Junction+extsize-1)) %>% dplyr::select(seqnames, start, end), ignore.strand=T, keep.extra.columns=T)
     } else {
       if(exttype[1]=="symmetrical") {
-        x_ranges  = GenomicRanges::makeGRangesFromDataFrame(x %>% dplyr::mutate(seqnames=Rname, start=Junction-ceiling(extsize/2), end=Junction+ceiling(extsize/2)), ignore.strand=T, keep.extra.columns=T)
+        x_ranges  = GenomicRanges::makeGRangesFromDataFrame(x %>% dplyr::mutate(seqnames=Rname, start=Junction-ceiling(extsize/2), end=Junction+ceiling(extsize/2)) %>% dplyr::select(seqnames, start, end), ignore.strand=T, keep.extra.columns=T)
       } else {
-        x_ranges  = GenomicRanges::makeGRangesFromDataFrame(x %>% dplyr::mutate(seqnames=Rname, start=Junction, end=Junction+1), ignore.strand=T, keep.extra.columns=T)
+        x_ranges  = GenomicRanges::makeGRangesFromDataFrame(x %>% dplyr::mutate(seqnames=Rname, start=Junction, end=Junction+1) %>% dplyr::select(seqnames, start, end), ignore.strand=T, keep.extra.columns=T)
       }
     }
 
     cov_ranges = as(GenomicRanges::coverage(x_ranges), "GRanges")
     ret_df = as.data.frame(cov_ranges) %>%
       dplyr::rename(tlxcov_chrom="seqnames", tlxcov_start="start", tlxcov_end="end", tlxcov_pileup="score") %>%
+      dplyr::inner_join(x %>% dplyr::distinct(Rname, tlxcov_is_bait_chrom=tlx_is_bait_chrom), by=c("tlxcov_chrom"="Rname")) %>%
       dplyr::select(matches("tlxcov_"))
     ret_df
   }
 
-  if(group=="all") group_cols = c("tlx_control")
-  if(group=="group") group_cols = c("tlx_group", "tlx_control")
-  if(group %in% c("sample", "none")) group_cols = c("tlx_group", "tlx_group_i", "tlx_control", "tlx_sample")
-  if(normalize_within=="all") normalize_within_cols = c("tlx_control")
-  if(normalize_within=="group") normalize_within_cols = c("tlx_group", "tlx_control")
-  if(normalize_within=="none") normalize_within_cols = c("tlx_sample", "tlx_control")
-  if(normalize_between=="all") normalize_between_cols = c()
-  if(normalize_between=="group") normalize_between_cols = setdiff(group_cols, c("tlx_control"))
-  if(normalize_between=="none") normalize_between_cols = group_cols
-
-  group_stramd_cols = group_cols
-  if(!ignore.strand) group_stramd_cols = c(group_cols, "tlx_strand")
-
-  normalization_target_fun = c("smallest"=min, "largest"=max, "mean"=mean, "median"=median)[[normalization_target]]
-  # Calculate library sizes for each sample and a normalization factor according to normalize argument
-  writeLines("Calculating normalization factor for sample...")
-  libsizes_df = tlx_df %>%
-    dplyr::ungroup() %>%
-    dplyr::mutate(tlx_control=ifelse(tlx_control, "Control", "Treatment")) %>%
-    dplyr::group_by(tlx_sample, tlx_group, tlx_group_i, tlx_control) %>%
-    dplyr::summarize(library_size=dplyr::n(), .groups="keep") %>%
-    dplyr::ungroup() %>%
-    dplyr::group_by_at(normalize_within_cols) %>%
-    dplyr::arrange(tlx_group, tlx_control, tlx_sample) %>%
-    dplyr::mutate(library_factor=normalization_target_fun(library_size)/library_size, library_target=ifelse(normalization_target_fun(library_size)==library_size,normalization_target, "")) %>%
-    dplyr::ungroup()
-  groupsizes_df = libsizes_df %>%
-    dplyr::group_by_at(group_cols) %>%
-    dplyr::summarize(library_groupsize=sum(library_size*library_factor)) %>%
-    dplyr::ungroup() %>%
-    dplyr::group_by_at(normalize_between_cols) %>%
-    dplyr::mutate(library_groupfactor=normalization_target_fun(library_groupsize)/library_groupsize) %>%
-    data.frame()
-  libsizes_df = libsizes_df %>%
-    dplyr::inner_join(groupsizes_df, by=group_cols) %>%
-    dplyr::mutate(library_factor.adj=library_factor*library_groupfactor)
-  writeLines(knitr::kable(libsizes_df))
-
+  group_cols = tlx_get_group_cols(group, ignore.strand=ignore.strand)
 
   # Calculate coverage for each sample
   writeLines("Calculating each sample coverage...")
   tlxcov_df = tlx_df %>%
     dplyr::group_by(tlx_group, tlx_group_i, tlx_sample, tlx_control, tlx_path, tlx_strand) %>%
     dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>%
-    dplyr::ungroup() %>%
-    dplyr::inner_join(libsizes_df %>% dplyr::select(tlx_sample, library_factor), by="tlx_sample") %>%
+    dplyr::ungroup()
+  tlxcov_df = tlxcov_df %>%
+    dplyr::left_join(libfactors_df %>% dplyr::select(tlx_sample, library_factor), by="tlx_sample") %>%
     dplyr::mutate(tlxcov_pileup.norm=tlxcov_pileup*library_factor)
 
   # Summarize group coverage by summing all samples in the group with each sample having a weight decided by library size
   writeLines("Adding up coverages from sample(s)...")
   zret = tlxcov_df %>%
-    dplyr::group_by_at(group_stramd_cols) %>%
+    dplyr::group_by_at(group_cols) %>%
     dplyr::do((function(z){
       z
       z_ranges = GenomicRanges::makeGRangesFromDataFrame(z %>% dplyr::mutate(seqnames=tlxcov_chrom, start=tlxcov_start, end=tlxcov_end), ignore.strand=T, keep.extra.columns=T)
       cov_ranges = as(GenomicRanges::coverage(z_ranges, weight=z$tlxcov_pileup.norm), "GRanges")
       ret_df = as.data.frame(cov_ranges) %>%
         dplyr::rename(tlxcov_chrom="seqnames", tlxcov_start="start", tlxcov_end="end", tlxcov_pileup="score") %>%
+        dplyr::mutate(tlxcov_end=tlxcov_end+1) %>%
         dplyr::select(matches("tlxcov_"))
       ret_df
     })(.)) %>%
@@ -520,10 +554,10 @@ tlx_extract_bait = function(tlx_df, bait_size, bait_region) {
 tlx_mark_offtargets = function(tlx_df, offtarget2bait_df, offtarget_region=1000, bait_region=1000) {
   # @todo: Change 100 to something meaningful?
   tlx_df$tlx_id = 1:nrow(tlx_df)
-  tlx_bait_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df %>% dplyr::mutate(seqnames=tlx_bait_chrom, start=tlx_bait_start, end=tlx_bait_end), keep.extra.columns=T, ignore.strand=T)
-  tlx_junc_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df %>% dplyr::mutate(seqnames=Rname, start=Junction, end=Junction), keep.extra.columns=T, ignore.strand=T)
-  offtarget2bait_bait_ranges =  GenomicRanges::makeGRangesFromDataFrame(offtarget2bait_df %>% dplyr::mutate(seqnames=bait_chrom, start=bait_start-bait_region/2, end=bait_end+bait_region/2), ignore.strand=T)
-  offtarget2bait_offt_ranges = GenomicRanges::makeGRangesFromDataFrame(offtarget2bait_df %>% dplyr::mutate(seqnames=offtarget_chrom, start=offtarget_start-offtarget_region/2, end=offtarget_end+offtarget_region/2), ignore.strand=T)
+  tlx_bait_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df, seqnames.field="tlx_bait_chrom", start.field="tlx_bait_start", end.field="tlx_bait_end", keep.extra.columns=T, ignore.strand=T)
+  tlx_junc_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df, seqnames.field="Rname", start.field="Junction", end.field="Junction", keep.extra.columns=T, ignore.strand=T)
+  offtarget2bait_bait_ranges =  GenomicRanges::makeGRangesFromDataFrame(offtarget2bait_df %>% dplyr::mutate(seqnames=bait_chrom, start=bait_start-bait_region/2, end=bait_end+bait_region/2), seqnames.field="seqnames", start.field="start", end.field="end", ignore.strand=T)
+  offtarget2bait_offt_ranges = GenomicRanges::makeGRangesFromDataFrame(offtarget2bait_df %>% dplyr::mutate(seqnames=offtarget_chrom, start=offtarget_start-offtarget_region/2, end=offtarget_end+offtarget_region/2), seqnames.field="seqnames", start.field="start", end.field="end", ignore.strand=T)
 
   tlx_offtarget_ids = as.data.frame(IRanges::findOverlaps(tlx_bait_ranges, offtarget2bait_bait_ranges)) %>%
     dplyr::rename(tlx_id="queryHits", o2b_id="subjectHits") %>%
@@ -559,12 +593,36 @@ tlx_mark_repeats = function(tlx_df, repeatmasker_df) {
 }
 
 #' @export
-tlx_macs2 = function(tlx_df, effective_size, maxgap=NULL, qvalue=0.01, pileup=1, extsize=2000, slocal=50000, llocal=10000000, exclude_bait_region=F, exclude_repeats=F, exclude_offtargets=F, exttype, grouping) {
+tlxcov_macs2 = function(tlxcov_df, group, params) {
+  validate_group(group)
+  group_cols = tlx_get_group_cols(group, ignore.strand=T, ignore.control=T)
+  group_df = tlxcov_df %>% dplyr::distinct_at(group_cols)
+
+  islands_df = data.frame()
+  qvalues_df = data.frame()
+  for(g in 1:nrow(group_df)) {
+    tlxcov_df.g = tlxcov_df %>% dplyr::inner_join(group_df[g,], by=group_cols)
+    tlxcov_ranges = tlxcov_df.g %>% dplyr::select(seqnames=tlxcov_chrom, start=tlxcov_start, end=tlxcov_end, score=tlxcov_pileup) %>% GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns=T)
+    sample_ranges = tlxcov_ranges[!tlxcov_df.g$tlx_control]
+    control_ranges = tlxcov_ranges[tlxcov_df.g$tlx_control]
+    writeLines(paste0("Running MACS for group {", paste(group_df[g,group_cols], collapse=","), "}"))
+    results = macs2_coverage(sample_ranges=sample_ranges, control_ranges=control_ranges, params=params)
+    islands_df = rbind(islands_df, group_df[g,] %>% tidyr::crossing(results[["islands"]]))
+    qvalues_df = rbind(qvalues_df, group_df[g,] %>% tidyr::crossing(results[["qvalues"]]))
+  }
+
+  list(qvalues=qvalues_df, islands=islands_df %>% dplyr::mutate(island_name=paste0("MACS3_", 1:dplyr::n())))
+}
+
+#' @export
+tlx_macs2 = function(tlx_df, effective_size, maxgap=NULL, qvalue=0.01, pileup=1, extsize=2000, slocal=200000, llocal=10000000, exclude_bait_region=F, exclude_repeats=F, exclude_offtargets=F, exttype, group, tmp_dir="tmp", tmp_name=NULL) {
   if(exclude_bait_region && !("tlx_is_bait_junction" %in% colnames(tlx_df))) {
     stop("tlx_is_bait_junction is not found in tlx data frame")
   }
 
-  validate_group(grouping)
+  if(is.null(tmp_name)) tmp_name=basename(tempfile())
+
+  validate_group(group)
   validate_exttype(exttype)
 
   macs2_tlx_df = tlx_df
@@ -601,21 +659,23 @@ tlx_macs2 = function(tlx_df, effective_size, maxgap=NULL, qvalue=0.01, pileup=1,
     maxgap = NULL
   }
 
-  if(grouping=="sample") {
-    macs2_tlx_df$grouping = paste(macs2_tlx_df$tlx_group, macs2_tlx_df$tlx_group_i)
+  if(group=="all") {
+    macs2_tlx_df$group = "all"
   }
-  if(grouping=="group") {
-    macs2_tlx_df$grouping = macs2_tlx_df$tlx_group
+  if(group=="sample") {
+    macs2_tlx_df$group = paste(macs2_tlx_df$tlx_group, macs2_tlx_df$tlx_group_i)
   }
+  if(group=="group") {
+    macs2_tlx_df$group = macs2_tlx_df$tlx_group
+  }
+  dir.create(tmp_dir, recursive=T, showWarnings=F)
 
   macs_df.all = data.frame()
-  for(gr in unique(macs2_tlx_df$grouping)) {
-    tlx_df.gr = macs2_tlx_df %>% dplyr::filter(grouping==gr)
+  for(gr in unique(macs2_tlx_df$group)) {
+    tlx_df.gr = macs2_tlx_df %>% dplyr::filter(group==gr)
 
-    f_input_bed = tempfile()
-    f_control_bed = tempfile()
-    # f_input_bed = "tmp/input.bed"
-    # f_control_bed = "tmp/control.bed"
+    f_input_bed = file.path(tmp_dir, paste0(tmp_name, "_", gr, "_input.bed"))
+    f_control_bed = file.path(tmp_dir, paste0(tmp_name, "_", gr, "_control.bed"))
 
     tlx_df.gr %>%
       dplyr::filter(!tlx_control) %>%
@@ -635,12 +695,19 @@ tlx_macs2 = function(tlx_df, effective_size, maxgap=NULL, qvalue=0.01, pileup=1,
       macs_df = macs2(name=basename(f_input_bed), sample=f_input_bed, maxgap=maxgap, effective_size=effective_size, extsize=extsize, qvalue=qvalue, slocal=slocal, llocal=llocal, output_dir=dirname(f_input_bed))
     }
 
-    macs_df$macs_group = tlx_df.gr$tlx_group[1]
-    if(grouping=="sample") {
+    if(group %in% c("sample", "group")) {
+      macs_df$macs_group = tlx_df.gr$tlx_group[1]
+    }
+    if(group=="sample") {
       macs_df$tlx_group_i = tlx_df.gr$tlx_group_i[1]
     }
+    if(group=="all") {
+      macs_df$macs_group = "all"
+    }
+    macs_df = macs_df %>% dplyr::mutate(macs_group=gr) %>%
+      dplyr::select(dplyr::matches("^(macs_group|macs_group_i)$"), dplyr::matches(".*"))
 
-    macs_df.all = rbind(macs_df.all, macs_df %>% dplyr::mutate(macs_group=gr))
+    macs_df.all = rbind(macs_df.all, macs_df)
   }
 
   macs_df.all = macs_df.all %>% dplyr::filter(macs_pileup>=pileup)

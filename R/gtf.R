@@ -12,7 +12,7 @@ gtf_read = function(path, dtype="gene") {
   }
   if("gene" %in% dtype) {
     results[["gene"]]  = as.data.frame(GenomicFeatures::genes(genome_txdb)) %>%
-      dplyr::mutate(gene_chrom=as.character(seqnames), gene_start=start, gene_end=end, gene_strand=strand, gene_length=gene_end-gene_start)
+      dplyr::mutate(gene_chrom=as.character(seqnames), gene_start=start, gene_end=end, gene_strand=as.character(strand), gene_length=gene_end-gene_start)
 
     #
     # Give a cluster position number to genes that overlap (for visualization)

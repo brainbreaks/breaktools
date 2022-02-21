@@ -6,6 +6,11 @@ macs_cols = function() {
   )
 }
 
+macs2_params = function(extsize=1e5, exttype="symetrical", llocal=2e6, minqvalue=0.01, maxgap=5e5, minlen=200, effective_size=1.87e9) {
+  as.data.frame(list(exttype=exttype, extsize=extsize, llocal=llocal, minqvalue=minqvalue, maxgap=maxgap, minlen=minlen, effective_size=effective_size))
+}
+
+
 #' @export
 macs_blank = function() {
   blank_tibble(macs_cols()) %>% dplyr::mutate(macs_sample=NA_character_, macs_group=NA_character_)
@@ -29,4 +34,70 @@ macs2 = function(name, sample, effective_size, control=NULL, maxgap=NULL, qvalue
   output_df %>%
     dplyr::slice(-1) %>%
     dplyr::select(-dplyr::matches("macs_comment"))
+}
+
+macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix=NULL)
+{
+  if(is.null(tmp_prefix)) {
+    tmp_prefix = file.path("tmp", basename(tempfile()))
+  }
+  sample_path = paste0(tmp_prefix, "-sample.bdg")
+  sample_df = as.data.frame(sample_ranges) %>%
+    dplyr::select(seqnames, start, end, score) %>%
+    dplyr::mutate(score=score)
+  readr::write_tsv(sample_df, file=sample_path, col_names=F)
+
+  baseline = as.data.frame(sample_ranges) %>%
+    dplyr::mutate(density=score/(end-start)) %>%
+    dplyr::filter(density<quantile(density, 0.5)) %>%
+    dplyr::summarise(baseline=sum(score*(end-start))/sum(end-start)) %>% .$baseline
+  writeLines(paste0("Detected baseline is ", baseline, "..."))
+
+  control_path = paste0(tmp_prefix, "-control.bdg")
+  if(is.null(control_ranges) | length(control_ranges)==0) {
+
+    control_ranges = as.data.frame(sample_ranges) %>%
+      dplyr::mutate(mean_score=sum(score*(end-start))/sum(end-start)) %>%
+      dplyr::mutate(score=baseline)
+  }
+  control_df = as.data.frame(control_ranges) %>%
+    dplyr::mutate(score=score) %>%
+    dplyr::select(seqnames, start, end, score)
+  readr::write_tsv(control_df, file=control_path, col_names=F)
+
+  qvalue_path = gsub(".bdg$", "_qvalue.bdg", sample_path)
+  peaks_path = gsub(".bdg$", ".peaks", sample_path)
+  bedpeaks_path = gsub(".bdg$", "_peaks.bed", sample_path)
+
+  cmd_bdgcmp = stringr::str_glue("macs3 bdgcmp -t {sample} -c {control} -m qpois -o {output} -p 0.1",
+     sample=sample_path, control=control_path, output=qvalue_path)
+  writeLines(cmd_bdgcmp)
+  system(cmd_bdgcmp)
+
+  cmd_bdgpeakcall = stringr::str_glue("macs3 bdgpeakcall -i {qvalue} -c {cutoff} --min-length {format(minlen, scientific=F)} --max-gap {format(maxgap, scientific=F)} -o {output}",
+     qvalue=qvalue_path, output=peaks_path, cutoff=-log10(params$minqvalue), maxgap=params$maxgap, minlen=params$minlen)
+  writeLines(cmd_bdgpeakcall)
+  system(cmd_bdgpeakcall)
+
+  qvalue_cols = cols(qvalue_chrom=col_character(), qvalue_start=col_double(), qvalue_end=col_double(), qvalue_score=col_double())
+  qvalues_df = readr::read_tsv(qvalue_path, col_names=names(qvalue_cols$cols), col_types=qvalue_cols)
+
+  peaks_cols = cols(
+    island_chrom=col_character(), island_start=col_double(), island_end=col_double(), island_peak=col_character(), island_summit_abs=col_double(),
+    island_score=col_character(), island_fc=col_double(), island_pvalue_log10=col_double(), island_qvalue_log10=col_double(), island_sammit_offset=col_double()
+  )
+  islands_df = readr::read_tsv(peaks_path, skip=1, col_names=names(peaks_cols$cols), col_types=peaks_cols) %>%
+    dplyr::mutate(island_length=island_end-island_start, island_summit_pos=island_start + island_sammit_offset, island_baseline=baseline, island_snr=island_summit_abs/baseline)
+  if(nrow(islands_df)) {
+    islands_df$island_name = paste0("MACS3_", 1:nrow(islands_df))
+  } else {
+    islands_df$island_name = character()
+  }
+
+  islands_df %>%
+    dplyr::mutate(strand=".") %>%
+    dplyr::select(island_chrom, island_start, island_end, island_name, island_qvalue_log10, strand) %>%
+    readr::write_tsv(bedpeaks_path, col_names=F)
+
+  list(qvalues=qvalues_df, islands=islands_df)
 }

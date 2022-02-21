@@ -101,7 +101,7 @@ bed_read = function(path) {
 
 #' @export
 get_seq = function(fasta, ranges) {
-  if(!check.binary("bedtools")) {
+  if(!bedr::check.binary("bedtools")) {
     stop("bedtools executible not found")
   }
 
@@ -120,14 +120,14 @@ get_seq = function(fasta, ranges) {
 }
 
 #' @export
-get_blat = function(sequences, database, minscore=20, tmp_dir="tmp") {
-  if(!check.binary("blat")) {
+get_blat = function(sequences, database, minscore=20, stepSize=5, tmp_dir="tmp") {
+  if(!bedr::check.binary("blat")) {
     stop("blat executible not found")
   }
-  if(!check.binary("bowtie")) {
+  if(!bedr::check.binary("bowtie")) {
     stop("bowtie executible not found")
   }
-  if(!check.binary("samtools")) {
+  if(!bedr::check.binary("samtools")) {
     stop("samtools executible not found")
   }
 
@@ -140,7 +140,7 @@ get_blat = function(sequences, database, minscore=20, tmp_dir="tmp") {
   sequences_df = data.frame(blat_query_name=paste0("seq", 1:length(sequences)), blat_sequence=sequences, stringsAsFactors=F)
   writeLines(paste0(">", sequences_df$blat_query_name, "\n", sequences_df$blat_sequence), con=fasta_path)
 
-  cmd = paste0("blat -stepSize=5 -repMatch=2253 -minScore=", minscore, " -minIdentity=0 -out=psl -dots=1 -noHead ", database, " ", fasta_path, " ", psl_path)
+  cmd = paste0("blat -stepSize=", stepSize, " -repMatch=2253 -minScore=", minscore, " -minIdentity=0 -out=psl -dots=1 -noHead ", database, " ", fasta_path, " ", psl_path)
   writeLines(cmd)
   system(cmd)
 
@@ -157,10 +157,10 @@ get_blat = function(sequences, database, minscore=20, tmp_dir="tmp") {
 
 #' @export
 get_bowtie = function(sequences, database, threads=30, tmp_dir="tmp") {
-  if(!check.binary("bowtie")) {
+  if(!bedr::check.binary("bowtie")) {
     stop("bowtie executible not found")
   }
-  if(!check.binary("samtools")) {
+  if(!bedr::check.binary("samtools")) {
     stop("samtools executible not found")
   }
   if(!file.exists(database)) { stop(paste0("Database file '", database, "' doesn't exist")) }
@@ -203,7 +203,7 @@ get_bowtie = function(sequences, database, threads=30, tmp_dir="tmp") {
 
 #' @export
 get_blast = function(sequences, database, word_size=4, perc_identity=100, tmp_dir="tmp") {
-  if(!check.binary("blastn")) {
+  if(!bedr::check.binary("blastn")) {
     stop("blast executible not found")
   }
   if(!file.exists(database)) { stop(paste0("Database file '", database, "' doesn't exist")) }
