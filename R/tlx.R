@@ -90,7 +90,8 @@ tlx_read_many = function(samples_df, threads=1) {
     }
   }
 
-  tlx_df.all
+  tlx_df.all %>%
+    dplyr::inner_join(samples_df, by=c("tlx_sample"="sample"))
 }
 
 tlx_generate_filename_col = function(df, include_sample=F, include_group=F, include_strand=F, include_treatment=T) {
@@ -129,7 +130,9 @@ tlx_write_bedgraph = function(tlx_df, path, group, exttype, extsize, normalize_w
 
 #' @export
 #'
-tlxcov_write_bedgraph = function(tlxcov_df, path, group, ignore.strand=T) {
+tlxcov_write_bedgraph = function(tlxcov_df, path, group) {
+  ignore.strand = !("tlx_strand" %in% colnames(tlxcov_df))
+
   writeLines("calculating filenames(s)...")
   if(group=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(path, "/", tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph"))
   if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(path, "/", tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph"))
@@ -591,6 +594,32 @@ tlx_mark_repeats = function(tlx_df, repeatmasker_df) {
   #   dplyr::select(-queryHits) %>%
   #   data.frame()
 }
+
+#' @export
+geom_tlxcov = function(x, scale=1) {
+  x_area = x %>%
+    dplyr::group_by(rdc_chrom, rdc_cluster, rdc_cluster_display)  %>%
+    dplyr::summarize(tlxcov_prevend=c(0, tlxcov_end[-dplyr::n()]), tlx_strand, tlxcov_start, tlxcov_end, tlxcov_pileup) %>%
+    dplyr::rowwise() %>%
+    dplyr::do((function(z) {
+      if(z$tlxcov_prevend==0) {
+        d = data.frame(tlxcov_pos=c(z$tlxcov_start, z$tlxcov_start, z$tlxcov_end), tlxcov_pileup=c(0,z$tlxcov_pileup,z$tlxcov_pileup), tlx_strand=z$tlx_strand)
+      } else {
+        if(z$tlxcov_start!=z$tlxcov_prevend) {
+          d = data.frame(tlxcov_pos=c(z$tlxcov_prevend, z$tlxcov_start, z$tlxcov_start, z$tlxcov_end), tlxcov_pileup=c(0,0,z$tlxcov_pileup,z$tlxcov_pileup), tlx_strand=z$tlx_strand)
+        } else {
+         d = data.frame(tlxcov_pos=c(z$tlxcov_start, z$tlxcov_end), tlxcov_pileup=z$tlxcov_pileup, tlx_strand=z$tlx_strand)
+        }
+      }
+      d = cbind(d, rdc_chrom=z$rdc_chrom, rdc_cluster=z$rdc_cluster, rdc_cluster_display=z$rdc_cluster_display)
+      d
+    })(.)) %>%
+    dplyr::ungroup()
+
+
+    geom_ribbon(aes(x=tlxcov_pos, ymin=0, ymax=tlxcov_pileup*scale, fill=tlx_strand), alpha=0.7, data=x_area)
+}
+
 
 #' @export
 tlxcov_macs2 = function(tlxcov_df, group, params) {

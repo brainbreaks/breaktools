@@ -68,14 +68,47 @@ blat_blank = function() {
 
 
 #' @export
-leftJoinByOverlaps = function(query, subject, ...) {
+leftJoinByOverlaps = function(query, subject) {
   query$query_id = 1:length(query)
   subject$subject_id = 1:length(subject)
-  result_df = as.data.frame(IRanges::mergeByOverlaps(query, subject, ...))
+  result_df = as.data.frame(IRanges::mergeByOverlaps(query, subject))
   result_df = dplyr::bind_rows(result_df, as.data.frame(query) %>% dplyr::anti_join(result_df %>% dplyr::select(query_id), by="query_id"))
   result_df = result_df %>% dplyr::select(-dplyr::matches("^(query|subject)\\."))
 
   result_df
+}
+
+#' @export
+innerJoinByOverlaps = function(subject_ranges, target_ranges) {
+  as.data.frame(IRanges::mergeByOverlaps(subject_ranges, target_ranges)) %>%
+    dplyr::select(-dplyr::matches("_ranges\\."))
+}
+
+#' @export
+innerJoinManyByOverlaps = function(ranges_list) {
+  results_ranges = ranges_list[[1]]
+  for(r_ranges in ranges_list[2:length(ranges_list)]) {
+    results_ranges = IRanges::mergeByOverlaps(results_ranges, r_ranges)
+    results_df = as.data.frame(results_ranges)
+    results_ranges = df2ranges(results_df, results_ranges.seqnames, results_ranges.start, results_ranges.end, results_ranges.strand)
+    results_cols = colnames(results_df)[!grepl("_ranges\\.", colnames(results_df))]
+    results_ranges = results_ranges[,results_cols]
+  }
+
+  as.data.frame(results_ranges)
+}
+
+#' @export
+df2ranges = function(df, chrom, start, end, strand=NULL) {
+  df$seqnames.field = eval(substitute(chrom), envir=df)
+  df$start.field = eval(substitute(start), envir=df)
+  df$end.field = eval(substitute(end), envir=df)
+  has_strand = deparse(substitute(strand)) != "NULL"
+  if(has_strand) {
+    df$strand.field = eval(substitute(strand), envir=df)
+  }
+
+  GenomicRanges::makeGRangesFromDataFrame(df, seqnames.field="seqnames.field", start.field="start.field", end.field="end.field", strand.field="strand.field", ignore.strand=!has_strand, keep.extra.columns=T)
 }
 
 #' @export
@@ -271,4 +304,8 @@ file_count_lines = function(path) {
   }
   close(f)
   nlines
+}
+
+trim = function(value, lb, ub) {
+  pmin(pmax(value, lb), ub)
 }
