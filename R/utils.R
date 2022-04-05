@@ -79,9 +79,23 @@ leftJoinByOverlaps = function(query, subject) {
 }
 
 #' @export
+fullJoinByOverlaps = function(query, subject) {
+  query$query_id = 1:length(query)
+  subject$subject_id = 1:length(subject)
+  result_df = as.data.frame(IRanges::mergeByOverlaps(query, subject))
+  result_df = dplyr::bind_rows(
+    result_df,
+    as.data.frame(query) %>% dplyr::anti_join(result_df %>% dplyr::select(query_id), by="query_id"),
+    as.data.frame(subject) %>% dplyr::anti_join(result_df %>% dplyr::select(subject_id), by="subject_id"))
+  result_df = result_df %>% dplyr::select(-dplyr::matches("^(query|subject)\\."), -dplyr::matches("^(subject_id|query_id)$"))
+
+  result_df
+}
+
+#' @export
 innerJoinByOverlaps = function(subject_ranges, target_ranges) {
-  as.data.frame(IRanges::mergeByOverlaps(subject_ranges, target_ranges)) %>%
-    dplyr::select(-dplyr::matches("_ranges\\."))
+  result_ranges = IRanges::mergeByOverlaps(subject_ranges, target_ranges)
+  as.data.frame(result_ranges) %>% dplyr::select(-dplyr::matches("_ranges\\."))
 }
 
 #' @export

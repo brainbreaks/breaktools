@@ -35,25 +35,44 @@ htgts_barcodes_detect = function(fastq_paths, primers, max_sequences=10000) {
   if(length(fastq_paths) != length(primers)) {
     stop("Vectors of fasta files and primes should be of the same length")
   }
+  # writeLines("Extracting number of reads from each sample")
+  # fasta_count = ShortRead::countFastq(fastq_paths)$records
+  fasta_count = rep(max_sequences, length(fastq_paths))
+
   barcodes_results_df = data.frame()
   for(i in 1:length(fastq_paths)) {
     writeLines(paste0(i, "/", length(fastq_paths)))
 
-    fasta_stream = ShortRead::FastqStreamer(fastq_paths[i], pmin(max_sequences, length(fasta)))
+    fasta_stream = ShortRead::FastqSampler(fastq_paths[i], pmin(max_sequences, fasta_count[i]))
     fasta = ShortRead::yield(fasta_stream)
     fasta_reads = as.character(ShortRead::sread(fasta))
+    fasta_reads_count = length(fasta_reads)
+    fasta_unique_reads = unique(fasta_reads)
+    fasta_unique_reads_count = length(fasta_unique_reads)
     close(fasta_stream)
+    writeLines(paste0("Read ", fasta_reads_count, "/", fasta_count[i], " lines (unique: ", fasta_unique_reads_count, ") from file '", fastq_paths[i], "'"))
+    fasta_reads = fasta_unique_reads
 
-    fasta_reads = fasta_reads[grepl(primers[i], fasta_reads)]
-    primer_locations = stringr::str_locate(pattern=primers[i], fasta_reads)[,1]
-    primer_offset_table = sort(table(primer_locations), decreasing=T)
+    # Align primer to reads
+    primer_alignment = Biostrings::pairwiseAlignment(pattern=fasta_reads, subject=primers[i])
+    primer_alignment_width = Biostrings::width(Biostrings::pattern(primer_alignment))
+    primer_alignment_score = Biostrings::score(primer_alignment)
+    primer_alignment_offset = Biostrings::start(Biostrings::pattern(primer_alignment))
+    primer_present = primer_alignment_score <= -200 & primer_alignment_width <= nchar(primers[i])*1.3
+    primer_alignment_offset = primer_alignment_offset[primer_present]
+    fasta_aligned_reads = fasta_reads[primer_present]
+
+    plot(sort(primer_alignment_width))
+    plot(sort(primer_alignment_score))
+
+    primer_offset_table = sort(table(primer_alignment_offset), decreasing=T)
     primer_offset = as.numeric(names(primer_offset_table)[1])
-    primer_percent = primer_offset_table[1]/length(fasta)
-    fasta_reads = fasta_reads[primer_locations==primer_offset]
-    mid_all = substr(fasta_reads, 0, stop=primer_offset-1)
+    fasta_offset_reads = fasta_aligned_reads[primer_alignment_offset==primer_offset]
+    mid_all = substr(fasta_offset_reads, 0, stop=primer_offset-1)
+
     mid_table = sort(table(mid_all), decreasing=T)
-    mid_percent = mid_table[1]/length(fasta)
-    barcodes_results_df.i = data.frame(barcode_fasta=fastq_paths[i], barcode_primer=primers[i], barcode_primer_percent=primer_percent, barcode_percent=mid_percent, barcode_sequence=names(mid_table)[1])
+    mid_percent = mid_table[1]/length(fasta_reads)
+    barcodes_results_df.i = data.frame(barcode_fasta=fastq_paths[i], barcode_primer=primers[i], primer_percent=mean(primer_present), barcode_percent=mid_percent, barcode_sequence=names(mid_table)[1])
     barcodes_results_df = rbind(barcodes_results_df, barcodes_results_df.i)
   }
   barcodes_results_df
