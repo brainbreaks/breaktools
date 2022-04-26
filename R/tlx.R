@@ -22,7 +22,7 @@ validate_exttype = function(exttype) {
 
 tlx_get_group_cols = function(group, ignore.strand=T, ignore.control=F) {
   validate_group(group)
-  if(group=="all") group_cols = c()
+  if(group=="all") group_cols = c("")[-1]
   if(group=="group") group_cols = c("tlx_group")
   if(group %in% c("sample", "none")) group_cols = c("tlx_group", "tlx_group_i", "tlx_sample")
 
@@ -387,7 +387,9 @@ tlx_mark_dust = function(tlx_df, tmp_dir="tmp") {
     writeLines("Using dustmasker to calculate low complexity regions...")
     system(paste0("dustmasker -in ", qnames_fasta, " -out ", qnames_dust, " -outfmt acclist"))
   }
-  tlx_dust_df = readr::read_tsv(qnames_dust, col_names=c("Qname", "dust_start", "dust_end")) %>%
+
+  dust_cols = readr::cols(Qname=readr::col_character(), dust_start=readr::col_double(), dust_end=readr::col_double())
+  tlx_dust_df = readr::read_tsv(qnames_dust, col_names=names(dust_cols$cols), col_types=dust_cols) %>%
     dplyr::mutate(dust_length=dust_end-dust_start+1, Qname=gsub("^>", "", Qname)) %>%
     dplyr::group_by(Qname) %>%
     dplyr::summarize(tlx_dust_dust_regions=n(), tlx_dust_length=sum(dust_length), tlx_dust_coordinates=paste0(dust_start, "-", dust_end, collapse="; ")) %>%
@@ -554,21 +556,20 @@ tlx_extract_bait = function(tlx_df, bait_size, bait_region) {
 }
 
 #' @export
-tlx_mark_offtargets = function(tlx_df, offtarget2bait_df, offtarget_region=1000, bait_region=1000) {
-  # @todo: Change 100 to something meaningful?
+tlx_mark_offtargets = function(tlx_df, offtargets_df, offtarget_region=1000, bait_region=1000) {
   tlx_df$tlx_id = 1:nrow(tlx_df)
-  tlx_bait_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df, seqnames.field="tlx_bait_chrom", start.field="tlx_bait_start", end.field="tlx_bait_end", keep.extra.columns=T, ignore.strand=T)
-  tlx_junc_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df, seqnames.field="Rname", start.field="Junction", end.field="Junction", keep.extra.columns=T, ignore.strand=T)
-  offtarget2bait_bait_ranges =  GenomicRanges::makeGRangesFromDataFrame(offtarget2bait_df %>% dplyr::mutate(seqnames=bait_chrom, start=bait_start-bait_region/2, end=bait_end+bait_region/2), seqnames.field="seqnames", start.field="start", end.field="end", ignore.strand=T)
-  offtarget2bait_offt_ranges = GenomicRanges::makeGRangesFromDataFrame(offtarget2bait_df %>% dplyr::mutate(seqnames=offtarget_chrom, start=offtarget_start-offtarget_region/2, end=offtarget_end+offtarget_region/2), seqnames.field="seqnames", start.field="start", end.field="end", ignore.strand=T)
+  tlx_bait_ranges = tlx_df %>% df2ranges(tlx_bait_chrom, tlx_bait_start, tlx_bait_end)
+  tlx_junc_ranges = tlx_df %>% df2ranges(Rname, Junction, Junction)
+  offtargets_bait_ranges = offtargets_df %>% df2ranges(offtarget_bait_chrom, offtarget_bait_start-bait_region/2, offtarget_bait_end+bait_region/2)
+  offtargets_offt_ranges = offtargets_df %>% df2ranges(offtarget_chrom, offtarget_start-offtarget_region/2, offtarget_end+offtarget_region/2)
 
-  tlx_offtarget_ids = as.data.frame(IRanges::findOverlaps(tlx_bait_ranges, offtarget2bait_bait_ranges)) %>%
+  tlx_offtarget_ids = as.data.frame(IRanges::findOverlaps(tlx_bait_ranges, offtargets_bait_ranges)) %>%
     dplyr::rename(tlx_id="queryHits", o2b_id="subjectHits") %>%
-    dplyr::inner_join(as.data.frame(IRanges::findOverlaps(tlx_junc_ranges, offtarget2bait_offt_ranges)), by=c(tlx_id="queryHits", o2b_id="subjectHits")) %>%
+    dplyr::inner_join(as.data.frame(IRanges::findOverlaps(tlx_junc_ranges, offtargets_offt_ranges)), by=c(tlx_id="queryHits", o2b_id="subjectHits")) %>%
     dplyr::distinct(tlx_id) %>%
     .$tlx_id
 
-  tlx_df$tlx_is_offtarget = tlx_df$tlx_id %in% tlx_offtarget_ids
+  tlx_df$tlx_is_offtarget = tlx_df$tlx_id %in% tlx_offtarget_ids | tlx_df$tlx_is_bait_junction
 
   tlx_df
 }
@@ -625,21 +626,23 @@ geom_tlxcov = function(x, scale=1) {
 tlxcov_macs2 = function(tlxcov_df, group, params) {
   validate_group(group)
   group_cols = tlx_get_group_cols(group, ignore.strand=T, ignore.control=T)
-  group_df = tlxcov_df %>% dplyr::distinct_at(group_cols)
 
-  islands_df = data.frame()
-  qvalues_df = data.frame()
-  for(g in 1:nrow(group_df)) {
-    tlxcov_df.g = tlxcov_df %>% dplyr::inner_join(group_df[g,], by=group_cols)
-    tlxcov_ranges = tlxcov_df.g %>% dplyr::select(seqnames=tlxcov_chrom, start=tlxcov_start, end=tlxcov_end, score=tlxcov_pileup) %>% GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns=T)
-    sample_ranges = tlxcov_ranges[!tlxcov_df.g$tlx_control]
-    control_ranges = tlxcov_ranges[tlxcov_df.g$tlx_control]
-    writeLines(paste0("Running MACS for group {", paste(group_df[g,group_cols], collapse=","), "}"))
-    results = macs2_coverage(sample_ranges=sample_ranges, control_ranges=control_ranges, params=params)
-    islands_df = rbind(islands_df, group_df[g,] %>% tidyr::crossing(results[["islands"]]))
-    qvalues_df = rbind(qvalues_df, group_df[g,] %>% tidyr::crossing(results[["qvalues"]]))
-  }
+  results_df = tlxcov_df %>%
+    dplyr::group_by_at(group_cols) %>%
+    dplyr::do((function(z){
+      tlxcov_ranges = z %>% dplyr::mutate(score=tlxcov_pileup) %>% df2ranges(tlxcov_chrom, tlxcov_start, tlxcov_end)
+      sample_ranges = tlxcov_ranges[!tlxcov_ranges$tlx_control]
+      control_ranges = tlxcov_ranges[tlxcov_ranges$tlx_control]
 
+      group_desc = paste0(group_cols, rep("=", length(group_cols)), sapply(distinct(z[,group_cols]), as.character), collapse=",")
+      writeLines(paste0("Running MACS for group {", group_desc, "}"))
+      results = macs2_coverage(sample_ranges=sample_ranges, control_ranges=control_ranges, params=params)
+      dplyr::bind_rows(results[["islands"]], results[["qvalues"]])
+    })(.)) %>%
+    dplyr::ungroup()
+
+  islands_df = results_df %>% dplyr::select(dplyr::starts_with("island_")) %>% dplyr::filter_all(dplyr::all_vars(!is.na(.)))
+  qvalues_df = results_df %>% dplyr::select(dplyr::starts_with("qvalue_")) %>% dplyr::filter_all(dplyr::all_vars(!is.na(.)))
   list(qvalues=qvalues_df, islands=islands_df %>% dplyr::mutate(island_name=paste0("MACS3_", 1:dplyr::n())))
 }
 
