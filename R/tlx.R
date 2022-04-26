@@ -65,8 +65,8 @@ tlx_read_samples = function(annotation_path, samples_path) {
 #' @export
 tlx_read = function(path, sample, group="", group_i=1, control=F) {
   tlx_single_df = readr::read_tsv(path, comment="#", skip=1, col_names=names(tlx_cols()$cols), col_types=tlx_cols()) %>%
-    dplyr::mutate(tlx_strand=ifelse(Strand<0, "-", "+")) %>%
-    dplyr::mutate(Seq_length=nchar(Seq), tlx_sample=sample, tlx_path=path, tlx_group=group, tlx_group_i=group_i, tlx_control=control)
+    dplyr::mutate(tlx_strand=as.character(ifelse(Strand<0, "-", "+"))) %>%
+    dplyr::mutate(Seq_length=as.numeric(nchar(Seq)), tlx_sample=as.character(sample), tlx_path=as.character(path), tlx_group=as.character(group), tlx_group_i=as.numeric(group_i), tlx_control=as.logical(control))
 }
 
 #' @export
@@ -196,7 +196,7 @@ tlx_libfactors = function(tlx_df, group, normalize_within, normalize_between, no
     data.frame()
   libsizes_df = libsizes_df %>%
     dplyr::inner_join(groupsizes_df, by=group_cols) %>%
-    dplyr::mutate(library_factor.adj=library_factor*library_groupfactor)
+    dplyr::mutate(library_groupfactor=library_factor*library_groupfactor)
 
   libsizes_df
 }
@@ -269,8 +269,8 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ign
 
   if(is.null(libfactors_df)) {
     libfactors_df = tlx_df %>%
-      dplyr::mutate(library_factor=1) %>%
-      dplyr::distinct(tlx_sample, library_factor)
+      dplyr::mutate(library_groupfactor=1) %>%
+      dplyr::distinct(tlx_sample, library_groupfactor)
   }
 
   if(!all(tlx_df$tlx_sample %in% libfactors_df$tlx_sample)) {
@@ -305,8 +305,8 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ign
     dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>%
     dplyr::ungroup()
   tlxcov_df = tlxcov_df %>%
-    dplyr::left_join(libfactors_df %>% dplyr::select(tlx_sample, library_factor), by="tlx_sample") %>%
-    dplyr::mutate(tlxcov_pileup.norm=tlxcov_pileup*library_factor)
+    dplyr::left_join(libfactors_df %>% dplyr::select(tlx_sample, library_groupfactor), by="tlx_sample") %>%
+    dplyr::mutate(tlxcov_pileup.norm=tlxcov_pileup*library_groupfactor)
 
   # Summarize group coverage by summing all samples in the group with each sample having a weight decided by library size
   writeLines("Adding up coverages from sample(s)...")
@@ -742,48 +742,4 @@ tlx_macs2 = function(tlx_df, effective_size, maxgap=NULL, qvalue=0.01, pileup=1,
   macs_df.all = macs_df.all %>% dplyr::filter(macs_pileup>=pileup)
 
   macs_df.all
-}
-
-plot_logos_coordinates = function(fastq_paths, sample_names, widths=list("Beginning"=c(1,30), "End"=c(-25, -1))) {
-  plots = list()
-  for(i in 1:length(fastq_paths)) {
-    sample_path = fastq_paths[i]
-    sample_name = sample_names[i]
-    writeLines(paste0(i, "/", length(fastq_paths), " : ", sample_name, "    ", sample_path))
-
-    fasta = ShortRead::readFastq(sample_path)
-    fasta_reads = ShortRead::sread(fasta)
-    plist = list()
-    plist[[1]] = cowplot::ggdraw() +
-      cowplot::draw_label(sample_names[i], size=10)
-    for(wname in names(widths)) {
-      writeLines(paste0("  ", wname))
-
-      # If width is longer for all or some sequences then extend the sequences to the needed length
-      fasta_reads_long = fasta_reads
-      fasta_widths = Biostrings::width(fasta_reads_long)
-      fasta_ends = ifelse(fasta_widths>widths[[wname]][2], widths[[wname]][2], fasta_widths)
-      missing_nchar = widths[[wname]][2] - fasta_ends
-      if(any(missing_nchar>0)) {
-        fasta_missing = Biostrings::DNAStringSet(sapply(missing_nchar[missing_nchar>0], function(x) paste(replicate(x, expr="N"), collapse="")))
-        fasta_reads_long[missing_nchar>0] = Biostrings::xscat(fasta_reads_long[missing_nchar>0], fasta_missing)
-      }
-
-      fasta_w = Biostrings::subseq(fasta_reads_long, start=widths[[wname]][1], end=widths[[wname]][2])
-      plist[[length(plist)+1]] = ggplot() +
-          ggseqlogo::geom_logo(as.character(fasta_w)) +
-          labs(title=wname) +
-          ggseqlogo::theme_logo() +
-          guides(fill="none") +
-          theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())
-    }
-
-
-    defaultW = getOption("warn")
-    options(warn = -1)
-    p = cowplot::plot_grid(plotlist=plist, ncol=1+length(widths), rel_widths=c(1,3,3))
-    options(warn = defaultW)
-    plots[[sample_name]] = p
-  }
-  plots
 }

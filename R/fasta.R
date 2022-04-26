@@ -46,3 +46,52 @@ fasta_duplicates_count = function(paths, breakpoints=c(1, 10, 50, 100, 1000, 100
     return(duplicates_sumdf)
   }
 }
+
+plot_logos_coordinates = function(fastq_paths, sample_names, widths=list("Beginning"=c(1,30), "End"=c(-25, -1)), max_sequences=100000) {
+  plots = list()
+  for(i in 1:length(fastq_paths)) {
+    sample_path = fastq_paths[i]
+    sample_name = sample_names[i]
+    writeLines(paste0(i, "/", length(fastq_paths), " : ", sample_name, "    ", sample_path))
+
+    fasta_stream = ShortRead::FastqSampler(sample_path, max_sequences)
+    fasta = ShortRead::yield(fasta_stream)
+    fasta_reads = as.character(ShortRead::sread(fasta))
+    fasta_unique_reads = unique(fasta_reads)
+
+    # fasta = ShortRead::readFastq(sample_path)
+    # fasta_reads = ShortRead::sread(fasta)
+    plist = list()
+    plist[[1]] = cowplot::ggdraw() +
+      cowplot::draw_label(sample_names[i], size=10)
+    for(wname in names(widths)) {
+      writeLines(paste0("  ", wname))
+
+      # If width is longer for all or some sequences then extend the sequences to the needed length
+      fasta_reads_long = fasta_unique_reads
+      fasta_widths = Biostrings::width(fasta_reads_long)
+      fasta_ends = ifelse(fasta_widths>widths[[wname]][2], widths[[wname]][2], fasta_widths)
+      missing_nchar = widths[[wname]][2] - fasta_ends
+      if(any(missing_nchar>0)) {
+        fasta_missing = Biostrings::DNAStringSet(sapply(missing_nchar[missing_nchar>0], function(x) paste(replicate(x, expr="N"), collapse="")))
+        fasta_reads_long[missing_nchar>0] = Biostrings::xscat(fasta_reads_long[missing_nchar>0], fasta_missing)
+      }
+
+      fasta_w = Biostrings::subseq(fasta_reads_long, start=widths[[wname]][1], end=widths[[wname]][2])
+      plist[[length(plist)+1]] = ggplot2::ggplot() +
+          ggseqlogo::geom_logo(as.character(fasta_w)) +
+          ggplot2::labs(title=wname) +
+          ggseqlogo::theme_logo() +
+          ggplot2::guides(fill="none") +
+          ggplot2::theme(axis.title.x=ggplot2::element_blank(), axis.text.x=ggplot2::element_blank(), axis.ticks.x=ggplot2::element_blank(), axis.title.y=ggplot2::element_blank(), axis.text.y=ggplot2::element_blank(), axis.ticks.y=ggplot2::element_blank())
+    }
+
+
+    defaultW = getOption("warn")
+    options(warn = -1)
+    p = cowplot::plot_grid(plotlist=plist, ncol=1+length(widths), rel_widths=c(1,3,3))
+    options(warn = defaultW)
+    plots[[sample_name]] = p
+  }
+  plots
+}
