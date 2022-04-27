@@ -16,7 +16,7 @@ validate_normalization_target = function(target) {
 
 
 validate_exttype = function(exttype) {
-  valid_exttype = c("symmetrical", "along", "none")
+  valid_exttype = c("symmetrical", "along", "opposite", "none")
   if(!(exttype %in% valid_exttype)) { stop(simpleError(paste0("exttype should be one of: ", paste(valid_exttype, collapse=", "), " (Actual:", exttype, ")"))) }
 }
 
@@ -279,12 +279,16 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ign
 
   tlx_coverage_ = function(x, extsize, exttype) {
     if(exttype[1]=="along") {
-      x_ranges  = GenomicRanges::makeGRangesFromDataFrame(x %>% dplyr::mutate(seqnames=Rname, sstart=ifelse(Strand=="-1", Junction-extsize, Junction-1), end=ifelse(Strand=="-1", Junction, Junction+extsize-1)) %>% dplyr::select(seqnames, start, end), ignore.strand=T, keep.extra.columns=T)
+      x_ranges  = GenomicRanges::makeGRangesFromDataFrame(x %>% dplyr::mutate(seqnames=Rname, start=ifelse(tlx_strand=="-", Junction-extsize, Junction-1), end=ifelse(tlx_strand=="-", Junction, Junction+extsize-1)) %>% dplyr::select(seqnames, start, end), ignore.strand=T, keep.extra.columns=T)
     } else {
-      if(exttype[1]=="symmetrical") {
-        x_ranges  = GenomicRanges::makeGRangesFromDataFrame(x %>% dplyr::mutate(seqnames=Rname, start=Junction-ceiling(extsize/2), end=Junction+ceiling(extsize/2)) %>% dplyr::select(seqnames, start, end), ignore.strand=T, keep.extra.columns=T)
+      if(exttype[1]=="opposite") {
+        x_ranges  = GenomicRanges::makeGRangesFromDataFrame(x %>% dplyr::mutate(seqnames=Rname, start=ifelse(tlx_strand=="+", Junction-extsize, Junction-1), end=ifelse(tlx_strand=="+", Junction, Junction+extsize-1)) %>% dplyr::select(seqnames, start, end), ignore.strand=T, keep.extra.columns=T)
       } else {
-        x_ranges  = GenomicRanges::makeGRangesFromDataFrame(x %>% dplyr::mutate(seqnames=Rname, start=Junction, end=Junction+1) %>% dplyr::select(seqnames, start, end), ignore.strand=T, keep.extra.columns=T)
+        if(exttype[1]=="symmetrical") {
+          x_ranges  = GenomicRanges::makeGRangesFromDataFrame(x %>% dplyr::mutate(seqnames=Rname, start=Junction-ceiling(extsize/2), end=Junction+ceiling(extsize/2)) %>% dplyr::select(seqnames, start, end), ignore.strand=T, keep.extra.columns=T)
+        } else {
+          x_ranges  = GenomicRanges::makeGRangesFromDataFrame(x %>% dplyr::mutate(seqnames=Rname, start=Junction, end=Junction+1) %>% dplyr::select(seqnames, start, end), ignore.strand=T, keep.extra.columns=T)
+        }
       }
     }
 
@@ -310,7 +314,7 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ign
 
   # Summarize group coverage by summing all samples in the group with each sample having a weight decided by library size
   writeLines("Adding up coverages from sample(s)...")
-  zret = tlxcov_df %>%
+  tlxcov_df %>%
     dplyr::group_by_at(group_cols) %>%
     dplyr::do((function(z){
       z
@@ -560,8 +564,8 @@ tlx_mark_offtargets = function(tlx_df, offtargets_df, offtarget_region=1000, bai
   tlx_df$tlx_id = 1:nrow(tlx_df)
   tlx_bait_ranges = tlx_df %>% df2ranges(tlx_bait_chrom, tlx_bait_start, tlx_bait_end)
   tlx_junc_ranges = tlx_df %>% df2ranges(Rname, Junction, Junction)
-  offtargets_bait_ranges = offtargets_df %>% df2ranges(offtarget_bait_chrom, offtarget_bait_start-bait_region/2, offtarget_bait_end+bait_region/2)
-  offtargets_offt_ranges = offtargets_df %>% df2ranges(offtarget_chrom, offtarget_start-offtarget_region/2, offtarget_end+offtarget_region/2)
+  offtargets_bait_ranges = offtargets_df %>% dplyr::mutate(bait_region=bait_region) %>% df2ranges(offtarget_bait_chrom, offtarget_bait_start-bait_region/2, offtarget_bait_end+bait_region/2)
+  offtargets_offt_ranges = offtargets_df %>% dplyr::mutate(offtarget_region=offtarget_region) %>% df2ranges(offtarget_chrom, offtarget_start-offtarget_region/2, offtarget_end+offtarget_region/2)
 
   tlx_offtarget_ids = as.data.frame(IRanges::findOverlaps(tlx_bait_ranges, offtargets_bait_ranges)) %>%
     dplyr::rename(tlx_id="queryHits", o2b_id="subjectHits") %>%
@@ -630,6 +634,7 @@ tlxcov_macs2 = function(tlxcov_df, group, params) {
   results_df = tlxcov_df %>%
     dplyr::group_by_at(group_cols) %>%
     dplyr::do((function(z){
+      zz<<-z
       tlxcov_ranges = z %>% dplyr::mutate(score=tlxcov_pileup) %>% df2ranges(tlxcov_chrom, tlxcov_start, tlxcov_end)
       sample_ranges = tlxcov_ranges[!tlxcov_ranges$tlx_control]
       control_ranges = tlxcov_ranges[tlxcov_ranges$tlx_control]
@@ -637,13 +642,21 @@ tlxcov_macs2 = function(tlxcov_df, group, params) {
       group_desc = paste0(group_cols, rep("=", length(group_cols)), sapply(distinct(z[,group_cols]), as.character), collapse=",")
       writeLines(paste0("Running MACS for group {", group_desc, "}"))
       results = macs2_coverage(sample_ranges=sample_ranges, control_ranges=control_ranges, params=params)
-      dplyr::bind_rows(results[["islands"]], results[["qvalues"]])
+      results_df = dplyr::bind_cols(z[1,group_cols], dplyr::bind_rows(results[["islands"]], results[["qvalues"]])) %>%
+        dplyr::relocate(dplyr::matches("qvalue_|island_"), .after=tidyselect::last_col())
+      results_df
     })(.)) %>%
     dplyr::ungroup()
 
-  islands_df = results_df %>% dplyr::select(dplyr::starts_with("island_")) %>% dplyr::filter_all(dplyr::all_vars(!is.na(.)))
-  qvalues_df = results_df %>% dplyr::select(dplyr::starts_with("qvalue_")) %>% dplyr::filter_all(dplyr::all_vars(!is.na(.)))
-  list(qvalues=qvalues_df, islands=islands_df %>% dplyr::mutate(island_name=paste0("MACS3_", 1:dplyr::n())))
+  islands_df = results_df %>%
+    dplyr::filter_at(dplyr::vars(dplyr::starts_with("island_")), dplyr::all_vars(!is.na(.))) %>%
+    dplyr::select(-dplyr::starts_with("qvalue_")) %>%
+    dplyr::mutate(island_name=paste0("MACS3_", 1:dplyr::n())) %>%
+    dplyr::relocate(island_name)
+  qvalues_df = results_df %>%
+    dplyr::filter_at(dplyr::vars(dplyr::starts_with("qvalue_")), dplyr::all_vars(!is.na(.))) %>%
+    dplyr::select(-dplyr::starts_with("island_"))
+  list(qvalues=qvalues_df, islands=islands_df)
 }
 
 #' @export

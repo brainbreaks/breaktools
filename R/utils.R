@@ -114,15 +114,23 @@ innerJoinManyByOverlaps = function(ranges_list) {
 
 #' @export
 df2ranges = function(df, chrom, start, end, strand=NULL) {
-  df$seqnames.field = eval(substitute(chrom), envir=df)
-  df$start.field = eval(substitute(start), envir=df)
-  df$end.field = eval(substitute(end), envir=df)
+  seqnames.field = eval(substitute(chrom), envir=df)
+  start.field = eval(substitute(start), envir=df)
+  end.field = eval(substitute(end), envir=df)
   has_strand = deparse(substitute(strand)) != "NULL"
   if(has_strand) {
-    df$strand.field = eval(substitute(strand), envir=df)
+    strand.field = eval(substitute(strand), envir=df)
+  } else {
+    strand.field = rep("*", nrow(df))
   }
 
-  GenomicRanges::makeGRangesFromDataFrame(df, seqnames.field="seqnames.field", start.field="start.field", end.field="end.field", strand.field="strand.field", ignore.strand=!has_strand, keep.extra.columns=T)
+  ranges = GenomicRanges::GRanges(
+    seqnames=seqnames.field,
+    ranges=IRanges::IRanges(start=start.field, end=end.field),
+    strand=strand.field)
+  GenomicRanges::mcols(ranges) = df
+
+  ranges
 }
 
 #' @export

@@ -104,12 +104,12 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
       dplyr::inner_join(summit2sample_df, by="island_name")
   } else {
     islands_df$island_name = character()
-    islands_df$island_summit_qvalue = c()
-    islands_df$island_summit_abs = c()
-    islands_df$island_summit_pos = c()
+    islands_df$island_summit_qvalue = double()
+    islands_df$island_summit_abs = double()
+    islands_df$island_summit_pos = double()
   }
 
-  # Find coverage areass not overlapping with islands
+  # Find coverage areas not overlapping with islands
   notisland_sample_ranges = sample_ranges[!(IRanges::overlapsAny(sample_ranges, islands_df %>% df2ranges(island_chrom, island_start, island_end)))]
 
   # Calculate baseline and signal-to-noise ratio for each island separately
@@ -125,7 +125,6 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
     dplyr::inner_join(island2baseline_df, by="island_name") %>%
     dplyr::mutate(island_snr=island_summit_abs/baseline) %>%
     dplyr::select(island_name, island_chrom, island_start, island_end, island_length, island_summit_pos, island_summit_qvalue, island_summit_abs, island_baseline, island_snr)
-
 
   islands_df %>%
     dplyr::mutate(strand=".") %>%
