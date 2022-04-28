@@ -8,6 +8,10 @@ validate_group_within = function(within) {
   if(!(within %in% within_group)) { stop(simpleError(paste0("group should be one of: ", paste(within_group, collapse=", "), " (Actual:", within, ")"))) }
 }
 
+validate_bed_mode = function(mode) {
+  valid_mode = c("junction", "alignment")
+  if(!(mode %in% valid_mode)) { stop(simpleError(paste0("group should be one of: ", paste(valid_mode, collapse=", "), " (Actual:", mode, ")"))) }
+}
 
 validate_normalization_target = function(target) {
   valid_targets = c("smallest", "largest", "mean", "median")
@@ -125,23 +129,14 @@ tlx_generate_filename_col = function(df, include_sample=F, include_group=F, incl
 }
 
 #' @export
-tlx_write_bedgraph = function(tlx_df, path, group, exttype, extsize, normalize_within=NULL, normalize_between=NULL, normalization_target="smallest", ignore.strand=T, only.baitchrom=F) {
-  writeLines("Calculating coverage...")
-  tlxcov_df = tlx_coverage(tlx_df, group=group, exttype=exttype, extsize=extsize, normalize_within=normalize_within, normalize_between=normalize_between, normalization_target=normalization_target, ignore.strand=ignore.strand, only.baitchrom=only.baitchrom) %>%
-    dplyr::arrange(tlxcov_chrom, tlxcov_start)
-
-  tlxcov_write_bedgraph(tlxcov_df=tlxcov_df, path=path, group=group, ignore.strand=ignore.strand)
-}
-
-#' @export
 #'
 tlxcov_write_bedgraph = function(tlxcov_df, path, group) {
   ignore.strand = !("tlx_strand" %in% colnames(tlxcov_df))
 
   writeLines("calculating filenames(s)...")
-  if(group=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(path, "/", tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph"))
-  if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(path, "/", tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph"))
-  if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(path, "/", tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=!ignore.strand), ".bedgraph"))
+  if(group=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(dirname(path), "/", basename(path), "-", tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph"))
+  if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(dirname(path), "/", basename(path), "-", tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph"))
+  if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(dirname(path), "/", basename(path), "-", tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=!ignore.strand), ".bedgraph"))
   if(!ignore.strand) tlxcov_df = tlxcov_df %>% dplyr::mutate(tlxcov_pileup=ifelse(tlx_strand=="+", 1, -1)*tlxcov_pileup)
 
 
@@ -207,11 +202,14 @@ tlx_libfactors = function(tlx_df, group, normalize_within, normalize_between, no
 }
 
 #' @export
-tlx_write_bed = function(tlx_df, path, group, ignore.strand=T) {
+tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.strand=T) {
   validate_group_within(group)
+  validate_bed_mode(mode)
 
-  tlx_bed_df = tlx_df %>%
-    dplyr::mutate(start=Junction, end=Junction, name=paste0(Qname, " (", tlx_sample, ")"))
+  if(mode=="junction") tlx_bed_df = tlx_df %>% dplyr::mutate(start=Junction, end=Junction, name=paste0(Qname, " (", tlx_sample, ")"))
+  if(mode=="alignment") tlx_bed_df = tlx_df %>% dplyr::mutate(start=Rstart, end=Rend, name=paste0(Qname, " (", tlx_sample, ")"))
+
+
     # dplyr::mutate(start=ifelse(Strand=="-1", Junction-1, Junction), end=ifelse(Strand=="-1", Junction, Junction+1))
 
   writeLines("calculating filenames(s)...")
@@ -225,7 +223,7 @@ tlx_write_bed = function(tlx_df, path, group, ignore.strand=T) {
     dplyr::group_by(g) %>%
     dplyr::do((function(z){
       z.out = z %>% dplyr::select(Rname, start, end, name, mapqual, tlx_strand)
-      z.path = file.path(path, paste0(z$g[1], ".bed"))
+      z.path = file.path(dirname(path), paste0(basename(path), "-", z$g[1], ".bed"))
       writeLines(paste0("Writing to file '", z.path, "'"))
       readr::write_tsv(z.out, file=z.path, col_names=F)
       data.frame()
@@ -581,6 +579,26 @@ tlx_mark_offtargets = function(tlx_df, offtargets_df, offtarget_region=1000, bai
   tlx_df$tlx_is_offtarget = tlx_df$tlx_id %in% tlx_offtarget_ids | tlx_df$tlx_is_bait_junction
 
   tlx_df
+}
+
+
+#' @export
+tlx_strand_crosscorrelation = function(z, step=1000, negative_correlation=F)
+{
+  z.sense = z %>% dplyr::filter(tlx_strand=="+")
+  z.anti = z %>% dplyr::filter(tlx_strand=="-")
+  z.left = pmax(min(z.sense$tlxcov_start), min(z.anti$tlxcov_start))
+  z.right = pmin(max(z.sense$tlxcov_start), max(z.anti$tlxcov_start))
+  p.sense = approx(x=z.sense$tlxcov_start, y=z.sense$tlxcov_pileup, xout=seq(z.left, z.right, by=step))
+  p.anti = approx(x=z.anti$tlxcov_start, y=z.anti$tlxcov_pileup, xout=seq(z.left, z.right, by=step))
+
+  ccf.sense = ccf(p.sense$y, p.anti$y, lag.max=floor(length(p.anti$y)/4), plot=F)
+  if(negative_correlation) {
+    f = which.max(abs(ccf.sense$acf))
+  } else {
+    f = which.max(ccf.sense$acf)
+  }
+  data.frame(crosscorrelation_lag=ccf.sense$lag[f]*step, crosscorrelation_rellag=ccf.sense$lag[f]/length(p.sense), crosscorrelation_value=ccf.sense$acf[f])
 }
 
 #' @export

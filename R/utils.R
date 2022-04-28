@@ -121,12 +121,15 @@ test = function()
 
 #' @export
 df2ranges = function(df, chrom, start, end, strand=NULL) {
-  seqnames.field = eval(substitute(chrom), envir=df)
-  start.field = eval(substitute(start), envir=df)
-  end.field = eval(substitute(end), envir=df)
+  env = parent.frame()
+  for(l in names(df)) env[[l]] = df[[l]]
+
+  seqnames.field = eval(substitute(chrom), envir=env)
+  start.field = eval(substitute(start), envir=env)
+  end.field = eval(substitute(end), envir=env)
   has_strand = deparse(substitute(strand)) != "NULL"
   if(has_strand) {
-    strand.field = eval(substitute(strand), envir=df)
+    strand.field = eval(substitute(strand), envir=env)
   } else {
     strand.field = rep("*", nrow(df))
   }
