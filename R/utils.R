@@ -112,6 +112,13 @@ innerJoinManyByOverlaps = function(ranges_list) {
   as.data.frame(results_ranges)
 }
 
+test = function()
+{
+  x = tlxcov_macs2(tlxcov_all_df, group="group", params)
+  devtools::load_all('~/Workspace/breaktools/')
+  offtarget_islands_ranges = x$islands %>% df2ranges(island_chrom, island_start, island_end)
+}
+
 #' @export
 df2ranges = function(df, chrom, start, end, strand=NULL) {
   seqnames.field = eval(substitute(chrom), envir=df)

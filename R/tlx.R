@@ -66,13 +66,18 @@ tlx_read_samples = function(annotation_path, samples_path) {
 tlx_read = function(path, sample, group="", group_i=1, control=F) {
   tlx_single_df = readr::read_tsv(path, comment="#", skip=1, col_names=names(tlx_cols()$cols), col_types=tlx_cols()) %>%
     dplyr::mutate(tlx_strand=as.character(ifelse(Strand<0, "-", "+"))) %>%
-    dplyr::mutate(Seq_length=as.numeric(nchar(Seq)), tlx_sample=as.character(sample), tlx_path=as.character(path), tlx_group=as.character(group), tlx_group_i=as.numeric(group_i), tlx_control=as.logical(control))
+    dplyr::mutate(Seq_length=as.numeric(nchar(Seq)), tlx_sample=as.character(sample), tlx_path=as.character(path), tlx_group=as.character(group), tlx_group_i=as.numeric(group_i), tlx_control=as.logical(control)) %>%
+    dplyr::mutate(tlx_duplicated=duplicated(paste0(Rname, B_Rstart, B_Rend, ifelse(tlx_strand=="+", Rstart, Rend))))
 }
 
 #' @export
 tlx_read_many = function(samples_df, threads=1) {
-  tlx_df.all = data.frame()
+  if(!all(samples_df$tlx_exists)) {
+    files_str = paste(samples_df %>% dplyr::filter(!file.exists(samples_df$path)) %>% .$path, collapse="\n")
+    stop(paste0("Some TLX files do not exist: \n", files_str))
+  }
 
+  tlx_df.all = data.frame()
   if(threads > 1) {
     doParallel::registerDoParallel(cores=2)
     tlx_df.all = foreach(f=1:nrow(samples_df)) %dopar% {
