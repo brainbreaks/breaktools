@@ -141,7 +141,7 @@ tlxcov_write_bedgraph = function(tlxcov_df, path, group) {
 
 
   writeLines("Writing bedgraph file(s)...")
-  if(!dir.exists(path)) dir.create(path, recursive=T)
+  if(!dir.exists(dirname(path))) dir.create(dirname(path), recursive=T)
   tlxcov_df %>%
     dplyr::group_by(g) %>%
     dplyr::do((function(z){
@@ -209,16 +209,13 @@ tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.stra
   if(mode=="junction") tlx_bed_df = tlx_df %>% dplyr::mutate(start=Junction, end=Junction, name=paste0(Qname, " (", tlx_sample, ")"))
   if(mode=="alignment") tlx_bed_df = tlx_df %>% dplyr::mutate(start=Rstart, end=Rend, name=paste0(Qname, " (", tlx_sample, ")"))
 
-
-    # dplyr::mutate(start=ifelse(Strand=="-1", Junction-1, Junction), end=ifelse(Strand=="-1", Junction, Junction+1))
-
   writeLines("calculating filenames(s)...")
   if(group=="all") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=!ignore.strand))
   if(group=="group") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=!ignore.strand))
   if(group=="sample") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=!ignore.strand))
 
   writeLines("Writing bedgraph file(s)...")
-  if(!dir.exists(path)) dir.create(path, recursive=T)
+  if(!dir.exists(dirname(path))) dir.create(dirname(path), recursive=T)
   tlx_bed_df %>%
     dplyr::group_by(g) %>%
     dplyr::do((function(z){
@@ -583,22 +580,36 @@ tlx_mark_offtargets = function(tlx_df, offtargets_df, offtarget_region=1000, bai
 
 
 #' @export
-tlx_strand_crosscorrelation = function(z, step=1000, negative_correlation=F)
+tlx_strand_crosscorrelation = function(z, step=1000, min_points=5, negative_correlation=F)
 {
-  z.sense = z %>% dplyr::filter(tlx_strand=="+")
-  z.anti = z %>% dplyr::filter(tlx_strand=="-")
-  z.left = pmax(min(z.sense$tlxcov_start), min(z.anti$tlxcov_start))
-  z.right = pmin(max(z.sense$tlxcov_start), max(z.anti$tlxcov_start))
-  p.sense = approx(x=z.sense$tlxcov_start, y=z.sense$tlxcov_pileup, xout=seq(z.left, z.right, by=step))
-  p.anti = approx(x=z.anti$tlxcov_start, y=z.anti$tlxcov_pileup, xout=seq(z.left, z.right, by=step))
+  zz<<-z
+  z.range = c(min(z$tlxcov_start), max(z$tlxcov_end-1))
+  z.sense = z %>%
+    dplyr::filter(tlx_strand=="+") %>%
+    dplyr::mutate(start=tlxcov_start, end=tlxcov_end-1) %>%
+    reshape2::melt(measure.vars=c("start", "end"), value.name="position") %>%
+    dplyr::arrange(position)
+  z.anti = z %>%
+    dplyr::filter(tlx_strand=="-") %>%
+    dplyr::mutate(start=tlxcov_start, end=tlxcov_end-1) %>%
+    reshape2::melt(measure.vars=c("start", "end"), value.name="position") %>%
+    dplyr::arrange(position)
 
-  ccf.sense = ccf(p.sense$y, p.anti$y, lag.max=floor(length(p.anti$y)/4), plot=F)
-  if(negative_correlation) {
-    f = which.max(abs(ccf.sense$acf))
+  if(nrow(z.sense)>=min_points & nrow(z.anti)>=min_points) {
+    p.sense = approx(x=z.sense$position, y=z.sense$tlxcov_pileup, xout=seq(z.range[1], z.range[2], by=step), yleft=0, yright=0)$y
+    p.anti = approx(x=z.anti$position, y=z.anti$tlxcov_pileup, xout=seq(z.range[1], z.range[2], by=step), yleft=0, yright=0)$y
+
+    ccf.sense = ccf(p.sense, p.anti, lag.max=floor(length(p.anti)/2), plot=F)
+    if(negative_correlation) {
+      f = which.max(abs(ccf.sense$acf))
+    } else {
+      f = which.max(ccf.sense$acf)
+    }
+
+    res = data.frame(crosscorrelation_lag=ccf.sense$lag[f]*step, crosscorrelation_rellag=ccf.sense$lag[f]/length(p.sense), crosscorrelation_value=ccf.sense$acf[f])
   } else {
-    f = which.max(ccf.sense$acf)
+    res = data.frame(crosscorrelation_lag=NA_real_, crosscorrelation_rellag=NA_real_, crosscorrelation_value=NA_real_)
   }
-  data.frame(crosscorrelation_lag=ccf.sense$lag[f]*step, crosscorrelation_rellag=ccf.sense$lag[f]/length(p.sense), crosscorrelation_value=ccf.sense$acf[f])
 }
 
 #' @export

@@ -94,6 +94,10 @@ fullJoinByOverlaps = function(query, subject) {
 
 #' @export
 innerJoinByOverlaps = function(subject_ranges, target_ranges) {
+  intersected_columns = intersect(colnames(GenomicRanges::mcols(subject_ranges)), colnames(GenomicRanges::mcols(target_ranges)))
+  if(length(intersected_columns)>0) {
+    stop(paste("Target and subject ranges have overlapping columns:", paste(intersected_columns, collapse=", ")))
+  }
   result_ranges = IRanges::mergeByOverlaps(subject_ranges, target_ranges)
   as.data.frame(result_ranges) %>% dplyr::select(-dplyr::matches("_ranges\\."))
 }
