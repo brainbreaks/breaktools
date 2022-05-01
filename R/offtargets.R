@@ -1,3 +1,4 @@
+#' @title offtargets_read
 #' @export
 #' @description Read file containing offtarget information for sgRNA targets
 #' @param path Path to file with offtarget information

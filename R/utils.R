@@ -76,6 +76,7 @@ separate_target_subject_columns = function(query_ranges, subject_ranges) {
 }
 
 
+#' @title leftJoinByOverlaps
 #' @export
 #' @description Left-join query and subject ranges based on overlap between them
 #'
@@ -101,6 +102,7 @@ leftJoinByOverlaps = function(query_ranges, subject_ranges) {
   result_df
 }
 
+#' @title fullJoinByOverlaps
 #' @export
 #' @description Full-join query and subject ranges based on overlap between them
 #'
@@ -129,6 +131,7 @@ fullJoinByOverlaps = function(query_ranges, subject_ranges) {
   result_df
 }
 
+#' @title innerJoinByOverlaps
 #' @export
 #' @description Inner-join query and subject ranges based on overlap between them
 #'
@@ -163,6 +166,7 @@ test = function()
   fullJoinByOverlaps(query_ranges, subject_ranges)
 }
 
+#' @title df2ranges
 #' @export
 #' @description Convert data.frame-like object to GRanges
 #'
@@ -208,6 +212,7 @@ df2ranges = function(df, chrom, start, end, strand=NULL, keep_coordinates_column
   ranges
 }
 
+#' @title liftOverRanges
 #' @export
 #' @description Lift over coordinates from one model to another
 #'
@@ -227,6 +232,7 @@ liftOverRanges = function(ranges, chain_path) {
 }
 
 
+#' @title bed_read
 #' @export
 #' @description Read BED file
 #' @param path Path to BED file
@@ -237,6 +243,7 @@ bed_read = function(path) {
   bed
 }
 
+#' @title get_seq
 #' @export
 #' @description Get sequences from specified fasta file using coordinates
 #' @param fasta Path to FASTA file
@@ -261,6 +268,7 @@ get_seq = function(fasta, ranges) {
   ranges
 }
 
+#' @title get_blat
 #' @export
 #' @description Use BLAT to search for sequences in FASTA file
 #'
@@ -308,6 +316,7 @@ get_blat = function(sequences, fasta, minscore=30, stepSize=5, tmp_dir="tmp") {
     dplyr::inner_join(sequences_df, by="blat_query_name")
 }
 
+#' @title get_bowtie
 #' @export
 #' @description Use BOWTIE to search for sequences in FASTA file
 #'
@@ -365,6 +374,7 @@ get_bowtie = function(sequences, fasta, threads=30, tmp_dir="tmp") {
   primers_alignments
 }
 
+#' @title get_blast
 #' @export
 #' @description Use BOWTIE to search for sequences in FASTA file
 #'
@@ -408,6 +418,7 @@ get_blast = function(sequences, fasta, word_size=4, perc_identity=100, tmp_dir="
     dplyr::inner_join(sequences_df, by="blast_qseqid")
 }
 
+#' @title file_count_lines
 #' @export
 #' @description Efficiently count number of lines in specified text file
 #' @param path Path to file
@@ -422,6 +433,7 @@ file_count_lines = function(path) {
   nlines
 }
 
+#' @title trim
 #' @export
 #' @description Trim all values to be in lower- and upper- bound intervals. Values that are outside that interval
 #' are set to `lb` and `ub` respectfully
