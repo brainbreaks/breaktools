@@ -1,10 +1,15 @@
 validate_group = function(group) {
-  valid_group = c("all", "group", "sample")
+  valid_group = c("all", "group", "treatment", "none")
   if(!(group %in% valid_group)) { stop(simpleError(paste0("group should be one of: ", paste(valid_group, collapse=", "), " (Actual:", group, ")"))) }
 }
 
 validate_group_within = function(within) {
-  within_group = c("all", "group", "none")
+  within_group = c("group", "treatment", "none")
+  if(!(within %in% within_group)) { stop(simpleError(paste0("group should be one of: ", paste(within_group, collapse=", "), " (Actual:", within, ")"))) }
+}
+
+validate_group_between = function(within) {
+  within_group = c("all", "group", "treatment", "none")
   if(!(within %in% within_group)) { stop(simpleError(paste0("group should be one of: ", paste(within_group, collapse=", "), " (Actual:", within, ")"))) }
 }
 
@@ -28,10 +33,11 @@ tlx_get_group_cols = function(group, ignore.strand=T, ignore.control=F) {
   validate_group(group)
   if(group=="all") group_cols = c("")[-1]
   if(group=="group") group_cols = c("tlx_group")
+  if(group=="treatment") group_cols = c("tlx_group", "tlx_control")
   if(group %in% c("sample", "none")) group_cols = c("tlx_group", "tlx_group_i", "tlx_sample")
 
-  if(!ignore.control) group_cols = c(group_cols, "tlx_control")
-  if(!ignore.strand) group_cols = c(group_cols, "tlx_strand")
+  if(!ignore.control) group_cols = unqiue(c(group_cols, "tlx_control"))
+  if(!ignore.strand) group_cols = unqiue(c(group_cols, "tlx_strand"))
 
   return(group_cols)
 }
@@ -128,7 +134,8 @@ tlx_read = function(path, sample, group="", group_i=1, control=F) {
   tlx_single_df = readr::read_tsv(path, comment="#", skip=1, col_names=names(tlx_cols()$cols), col_types=tlx_cols()) %>%
     dplyr::mutate(tlx_strand=as.character(ifelse(Strand<0, "-", "+"))) %>%
     dplyr::mutate(Seq_length=as.numeric(nchar(Seq)), tlx_sample=as.character(sample), tlx_path=as.character(path), tlx_group=as.character(group), tlx_group_i=as.numeric(group_i), tlx_control=as.logical(control)) %>%
-    dplyr::mutate(tlx_duplicated=duplicated(paste0(Rname, B_Rstart, B_Rend, ifelse(tlx_strand=="+", Rstart, Rend))))
+    dplyr::mutate(tlx_duplicated=duplicated(paste0(Rname, B_Rstart, B_Rend, ifelse(tlx_strand=="+", Rstart, Rend)))) %>%
+    dplyr::mutate(QSeq=substr(Seq, Qstart, Qend))
 }
 
 
@@ -227,42 +234,45 @@ test = function()
     dplyr::filter(grepl("concentration", experiment))
 
   tlx_df = tlx_read_many(samples_df, threads=30)
-  tlx_libfactors = tlx_libfactors(tlx_all_df, normalize_within="identiy", normalize_between="identiy")
+  tlx_all_df = tlx_df %>%
+    dplyr::mutate(tlx_group=ifelse(tlx_group=="DMSO", "APH 0.2 uM 96h", tlx_group))
+  tlx_libfactors = tlx_libfactors(tlx_all_df, group="group", normalize_within="treatment", normalize_between="all")
+
+  samples_df = tlx_read_samples("samples.tsv", "TLX")
+  tlx_df = tlx_read_many(samples_df, threads=30)
+  tlx_libfactors = tlx_libfactors(tlx_all_df, normalize_within="treatment", normalize_between="treatment")
+  tlxcov_df = tlx_coverage(tlx_df, group="treatment", extsize=20e3, exttype="symmertrical", libfactors_df=tlx_libfactors, ignore.strand=T)
 }
-  # if(group=="all") group_cols = c("")[-1]
-  # if(group=="group") group_cols = c("tlx_group")
-  # if(group %in% c("sample", "none")) group_cols = c("tlx_group", "tlx_group_i", "tlx_sample")
 
 #' @title tlx_libfactors
 #' @export
 #' @description Calculate normalization factors for samples
 #'
 #' @param tlx_df Data frame with information from multiple TLX files
-#' @param group Data groupping strategy (possible values are: all - treat all samples as single group, group - treat each group separately based on tlx_group column)
-#' @param normalize_within Strategy of data normalization within each group (possible values are: none - do not perform any sample normalization, all - normalize all samples realative to their size (separately for control/treatment samples), group - normalizes samples withing each group only (separately for control/treatment samples)
-#' @param normalize_between Strategy of data normalization between groups (possible values are: none - do not perform any between-groups normalization, all - normalize all samples realative to their size (separately for control/treatment samples), group - normalizes samples withing each group only (separately for control/treatment samples)
-#' @param normalization_target
+#' @param normalize_within Strategy of data normalization within each group (possible values are:
+#'   \strong{none} - do not perform any sample normalization
+#'   \strong{group} - normalize all samples within group realative to their size
+#'   \strong{treatment} - normalizes samples within each group like group option but analyze control and treatment separately)
+#' @param normalize_between Strategy of data normalization between groups or treatments (possible values are:
+#'   \strong{none} - do not perform any between-groups normalization
+#'   \strong{treatment} - normalize treatments within each group
+#'   \strong{group} - normalizes all groups and treatments accross all dataset
+#' @param normalization_target Name of the function that should be used for normalization (\strong{group} - normalize to smallest group/sample, \strong{max} - normalize to largest group/sample)
 #'
-#' @details
-#' Original HTGTS pipeline is hosted on \href{https://github.com/robinmeyers/transloc_pipeline}{github}. A docker image is available
-#' through \href{https://hub.docker.com/repository/docker/sandrejev/htgts}{DockerHUB} (docker://sandrejev/htgts:latest)
+#' @seealso tlx_coverage
 #'
-#' @return Data frame from TLX file
-tlx_libfactors = function(tlx_df, group, normalize_within, normalize_between, normalization_target="min")
+#' @return Data frame with normalization factors for each sample
+tlx_libfactors = function(tlx_df, normalize_within, normalize_between, normalization_target="min")
 {
-  if(is.null(normalize_within)) normalize_within = ifelse(group=="sample", "none", group)
-  if(is.null(normalize_between)) normalize_between = ifelse(group=="sample", "none", group)
-  validate_group(group)
   validate_group_within(normalize_within)
-  validate_group_within(normalize_between)
+  validate_group_between(normalize_between)
   validate_normalization_target(normalization_target)
 
-  group_cols = tlx_get_group_cols(group)
   if(normalize_within=="group") normalize_within_cols = c("tlx_group")
   if(normalize_within=="treatment") normalize_within_cols = c("tlx_group", "tlx_control")
   if(normalize_within=="none") normalize_within_cols = c("tlx_sample")
-  if(normalize_between=="all") normalize_between_cols = c()
-  if(normalize_between=="group") normalize_between_cols = setdiff(group_cols, "tlx_control")
+  if(normalize_between=="group") normalize_between_cols = c()
+  if(normalize_between=="treatment") normalize_between_cols = setdiff(normalize_within_cols, "tlx_control")
   if(normalize_between=="none") normalize_between_cols = normalize_within_cols
 
   normalization_target_fun = match.fun(normalization_target)
@@ -275,34 +285,48 @@ tlx_libfactors = function(tlx_df, group, normalize_within, normalize_between, no
     dplyr::summarize(library_size=dplyr::n(), .groups="keep") %>%
     dplyr::ungroup() %>%
     dplyr::group_by_at(normalize_within_cols) %>%
-    dplyr::mutate(library_factor=normalization_target_fun(library_size)/library_size, library_target=ifelse(normalization_target_fun(library_size)==library_size,normalization_target, "")) %>%
+    dplyr::mutate(library_within_factor=normalization_target_fun(library_size)/library_size, library_target=ifelse(normalization_target_fun(library_size)==library_size,normalization_target, "")) %>%
     dplyr::ungroup()
   groupsizes_df = libsizes_df %>%
     dplyr::group_by_at(normalize_within_cols) %>%
-    dplyr::summarize(library_groupsize=sum(library_size*library_factor)) %>%
+    dplyr::summarize(library_groupsize=sum(library_size*library_within_factor)) %>%
     dplyr::ungroup() %>%
     dplyr::group_by_at(normalize_between_cols) %>%
-    dplyr::mutate(library_groupfactor=normalization_target_fun(library_groupsize)/library_groupsize) %>%
+    dplyr::mutate(library_between_factor=normalization_target_fun(library_groupsize)/library_groupsize) %>%
     data.frame()
   libsizes_df = libsizes_df %>%
-    dplyr::inner_join(groupsizes_df, by=group_cols) %>%
-    dplyr::mutate(library_groupfactor=library_factor*library_groupfactor)
+    dplyr::inner_join(groupsizes_df, by=intersect(normalize_within_cols, normalize_between_cols)) %>%
+    dplyr::mutate(library_factor=library_within_factor*library_between_factor)
 
   libsizes_df
 }
 
+#' @title tlx_write_bed
 #' @export
-tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.strand=T) {
-  validate_group_within(group)
+#' @description Export TLX data frame as single, multiple groupped or multiple single-sample BED file(s)
+#'
+#' @param tlx_df Data frame with information from multiple TLX files
+#' @param path Path to a folder for exporting BED file(s)
+#' @param group Data groupping strategy
+#'   \strong{none} - Export each sample separately
+#'   \strong{group} - Export each group separately
+#'   \strong{all} - Pull data from all samples together
+#' @param mode Specifies which coordinates to use in BED file. Possible values are:
+#'   \strong{junction} - Single nucleotide position of a junction
+#'   \strong{alignment} - Coordinates of aligned prey sequence
+#' @param ignore.strand Boolean value indicating whether a separate BED file for each strand junctions should be created
+#' @param include_strand Boolean value indicating whether a separate BED file for each control/treatment should be created
+tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.strand=T, ignore.treatment=F) {
+  validate_group(group)
   validate_bed_mode(mode)
 
   if(mode=="junction") tlx_bed_df = tlx_df %>% dplyr::mutate(start=Junction, end=Junction, name=paste0(Qname, " (", tlx_sample, ")"))
   if(mode=="alignment") tlx_bed_df = tlx_df %>% dplyr::mutate(start=Rstart, end=Rend, name=paste0(Qname, " (", tlx_sample, ")"))
 
   writeLines("calculating filenames(s)...")
-  if(group=="all") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=!ignore.strand))
-  if(group=="group") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=!ignore.strand))
-  if(group=="sample") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=!ignore.strand))
+  if(group=="all") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=!ignore.treatment, include_strand=!ignore.strand))
+  if(group=="group") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=!ignore.treatment, include_strand=!ignore.strand))
+  if(group=="sample") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=!ignore.treatment, include_strand=!ignore.strand))
 
   writeLines("Writing bedgraph file(s)...")
   if(!dir.exists(dirname(path))) dir.create(dirname(path), recursive=T)
@@ -315,52 +339,47 @@ tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.stra
       readr::write_tsv(z.out, file=z.path, col_names=F)
       data.frame()
     })(.))
-  return(0)
+
+  return(NULL)
 }
 
 #' @title tlx_coverage
+#' @export
 #'
-#' @description Calculates coverage from tlx dataframe. The coverage can be pulled from multiple samples based on \code{group} parameter and
-#' normalized base on \code{normalize_within} and \code{normalize_between} and \code{normalization_target}
-#' on \code{group}
+#' @description Calculates coverage (pileup) from tlx data frame. The coverage can be pulled from multiple samples based on \code{group} parameter and
+#' normalized base factors specified for each sample in \code{libfactors_df}. The pileup is constructed upon summing overlapping
+#' extended (extended based on \code{extsize} and \code{exttype} parameters) junctions.
 #'
-#' @param tlx_df TLX dataframe produced by HTGTS translocation pipeline
+#' @param tlx_df Data frame with information from multiple TLX files
 #' @param group Grouping columns. Possible values are:
-#'    all         - group together all treatment and control samples
-#'    group       - group together all treatment and control samples from each group separately
-#'    none - Do not group anything
-#' @param extsize Each junction coordinate is extended by \code{extsize} bais pairs to calculate pileup
-#' @param exttype Type of junction extention for pileup calculation:
-#'    symmetrical - Extention is done around the center of the junction extending by \code{extsize/2} each direction
-#'    along       - Extention is done in the direction corresponding to pray strand and extending \code{extsize} that direction
-#' @param normalize_within Reads normalization strategy within the group. It signifies how each sample will be normalized
-#' before pulling it together with other samples from this group. Possible values are:
-#'    all         - Group together all treatment and control samples
-#'    group       - Group together each group treatment and control samples separately
-#'    none        - Do not group anything
-#' @param normalize_between Reads normalization strategy between the groups. It signifies how each group is normalized
-#' to allow direct comparison to other groups. Possible values are:
-#'    all         - All groups control and treetment libraries are normalized to have same size so that they can be directly compared
-#'    group       - Control and treatment libraries are normalized within each group separately so that they can be compared within the group
-#'    none        - No normalization is done
-#' @param normalization_target Normalization strategy.
-#'    smallest    - Normalize to smallest sample/group (make other samples smaller)
-#'    largest     - Normalize to largest sample/group (make other samples bigger)
-#'    mean        - Normalize to mean
-#'    meadian     - Normalize to median
+#'   \strong{all} - group together all groups
+#'   \strong{group} - group together all samples within each group
+#'   \strong{treatment} - group together all samples within each group, separately for control and treatment
+#'   \strong{none} - do not perform any groupping
+#' @param extsize To build coverage (pileup) data frame it is often usefull to extend the size of the junction (which is just one nucleotide representing the double stranded break).
+#'    Single nucleotide position is extended to a size large enough to overlap with other junctions, so that density could be calculated
+#' @param exttype Type of extension
+#'    \strong{symmetrical} - Extention is done around the center of the junction extending by \code{extsize/2} each direction
+#'    \strong{along} - Extention is done in the direction corresponding to pray strand and extending \code{extsize} that direction
+#'    \strong{opposite} - Extention is done opposite of pray strand direction and extending \code{extsize}
+#'    \strong{none} - No extention is performed
+#' @param libfactors_df A data frame with \code{tlx_sample} and \code{library_factor} columns used for sample normalization
+#' @param ignore.strand Ignore strand information or calculate coverage for each strand individually
 #'
 #' @return A data frame with coverages for each sample or group
 #' @examples
-#' no examples yet
-#' @export
+#' samples_df = tlx_read_samples("samples.tsv", "TLX")
+#' tlx_df = tlx_read_many(samples_df, threads=30)
+#' tlx_libfactors = tlx_libfactors(tlx_all_df, normalize_within="treatment", normalize_between="treatment")
+#' tlxcov_df = tlx_coverage(tlx_df, group="treatment", extsize=20e3, exttype="symmertrical", libfactors_df=tlx_libfactors, ignore.strand=T)
 tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ignore.strand=T) {
   validate_group(group)
   validate_exttype(exttype)
 
   if(is.null(libfactors_df)) {
     libfactors_df = tlx_df %>%
-      dplyr::mutate(library_groupfactor=1) %>%
-      dplyr::distinct(tlx_sample, library_groupfactor)
+      dplyr::mutate(library_factor=1) %>%
+      dplyr::distinct(tlx_sample, library_factor)
   }
 
   if(!all(tlx_df$tlx_sample %in% libfactors_df$tlx_sample)) {
@@ -399,8 +418,8 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ign
     dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>%
     dplyr::ungroup()
   tlxcov_df = tlxcov_df %>%
-    dplyr::left_join(libfactors_df %>% dplyr::select(tlx_sample, library_groupfactor), by="tlx_sample") %>%
-    dplyr::mutate(tlxcov_pileup.norm=tlxcov_pileup*library_groupfactor)
+    dplyr::left_join(libfactors_df %>% dplyr::select(tlx_sample, library_factor), by="tlx_sample") %>%
+    dplyr::mutate(tlxcov_pileup.norm=tlxcov_pileup*library_factor)
 
   # Summarize group coverage by summing all samples in the group with each sample having a weight decided by library size
   writeLines("Adding up coverages from sample(s)...")
@@ -419,21 +438,49 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ign
     dplyr::ungroup()
 }
 
+#' @title tlx_remove_rand_chromosomes
 #' @export
+#'
+#' @param tlx_df Data frame with information from multiple TLX files
+#' @description Remove non-conventional WGS sequence scaffolds (like Chr4_JH584294_random)
+#' @seealso tlx_mark_rand_chromosomes
+#'
+#' @return Data frame with rand scaffolds removed
 tlx_remove_rand_chromosomes = function(tlx_df) {
   tlx_df %>%
     dplyr::filter(Rname %in% paste0("chr", c(1:40, "X", "Y")))
 }
 
+#' @title tlx_mark_rand_chromosomes
 #' @export
+#'
+#' @description Mark non-conventional WGS sequence scaffolds (like Chr4_JH584294_random). Junctions detected in these
+#' chromosomes are marked appropriately in \code{tlx_is_rand_chrom} column
+#'
+#' @param tlx_df Data frame with information from multiple TLX files
+#' @seealso tlx_remove_rand_chromosomes
+#' @return Data frame with rand scaffolds removed
 tlx_mark_rand_chromosomes = function(tlx_df) {
   tlx_df %>%
     dplyr::mutate(tlx_is_rand_chrom = !(Rname %in% paste0("chr", c(1:40, "X", "Y"))))
 }
 
-tlx_calc_copynumber = function(tlx_df, bowtie_index, max_hits=500, threads=8, tmp_dir="tmp") {
-  tlx_df = tlx_df %>%
-    dplyr::mutate(QSeq=substr(Seq, Qstart, Qend))
+
+#' @title tlx_calc_copynumber
+#' @export
+#' @description Calculate copy number for each pray sequence in reference genome and save this value in \code{tlx_copynumber} column. The results are cached.
+#'
+#' @param tlx_df Data frame with information from multiple TLX files
+#' @param bowtie2_index Path to bowtie2 index
+#' @param max_hits Maximum number of matches to search for using bowtie2
+#' @param threads Number of threads used in bowtie2 when aligning pray sequences
+#' @param tmp_dir Path to folder with cached results
+#'
+#' @return Data frame with copy number in \code{tlx_copynumber} column
+tlx_calc_copynumber = function(tlx_df, bowtie2_index, max_hits=500, threads=8, tmp_dir="tmp") {
+  if(!bedr::check.binary("bowtie2")) {
+    stop("dustmasker executible not found")
+  }
 
   dir.create(tmp_dir, recursive=T, showWarnings=F)
   qnames_hash = openssl::md5(paste0(tlx_df$Qname, collapse=""))
@@ -466,8 +513,20 @@ tlx_calc_copynumber = function(tlx_df, bowtie_index, max_hits=500, threads=8, tm
     dplyr::left_join(qseq_cumcount_df, by="Qname")
 }
 
+
+#' @title tlx_mark_dust
 #' @export
+#' @description Predict "dust" using dustmasker
+#'
+#' @param tlx_df Data frame with information from multiple TLX files
+#' @param tmp_dir Path to folder with cached results
+#'
+#' @return Data frame with dust marked using \code{tlx_has_dust} column
 tlx_mark_dust = function(tlx_df, tmp_dir="tmp") {
+  if(!bedr::check.binary("dustmasker")) {
+    stop("dustmasker executible not found")
+  }
+
   dir.create(tmp_dir, recursive=T, showWarnings=F)
   qnames_hash = openssl::md5(paste0(tlx_df$Qname, collapse=""))
   qnames_fasta = file.path(tmp_dir, paste0(qnames_hash, ".fa"))
@@ -476,7 +535,7 @@ tlx_mark_dust = function(tlx_df, tmp_dir="tmp") {
   if(!file.exists(qnames_dust)) {
     if(!file.exists(qnames_fasta)) {
       writeLines("Writing temporary fasta file with sequences...")
-      writeLines(with(tlx_df, paste0(">", Qname, "\n", Seq)), con=qnames_fasta)
+      writeLines(with(tlx_df, paste0(">", Qname, "\n", QSeq)), con=qnames_fasta)
     }
     writeLines("Using dustmasker to calculate low complexity regions...")
     system(paste0("dustmasker -in ", qnames_fasta, " -out ", qnames_dust, " -outfmt acclist"))
