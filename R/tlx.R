@@ -36,7 +36,6 @@ tlx_get_group_cols = function(group, ignore.strand=T, ignore.control=F) {
   return(group_cols)
 }
 
-#' @export
 tlx_cols = function() {
   readr::cols(
     Qname=readr::col_character(), JuncID=readr::col_character(), Rname=readr::col_character(), Junction=readr::col_double(),
@@ -49,58 +48,11 @@ tlx_cols = function() {
   )
 }
 
-#' @export
 tlx_blank = function() {
   blank_tibble(tlx_cols()) %>%
     dplyr::mutate(tlx_sample=NA_character_, tlx_path=NA_character_, tlx_group=NA_character_, tlx_control=NA) %>%
     dplyr::mutate(tlx_is_bait_chromosome=NA, tlx_is_bait_junction=NA, tlx_is_offtarget=NA) %>%
     dplyr::slice(0)
-}
-
-#' @export
-tlx_read_samples = function(annotation_path, samples_path) {
-  samples_df = readr::read_tsv(annotation_path, comment="#") %>%
-    dplyr::mutate(path=file.path(samples_path, path)) %>%
-    dplyr::mutate(tlx_exists=file.exists(path))
-  samples_df
-}
-
-
-#' @export
-tlx_read = function(path, sample, group="", group_i=1, control=F) {
-  tlx_single_df = readr::read_tsv(path, comment="#", skip=1, col_names=names(tlx_cols()$cols), col_types=tlx_cols()) %>%
-    dplyr::mutate(tlx_strand=as.character(ifelse(Strand<0, "-", "+"))) %>%
-    dplyr::mutate(Seq_length=as.numeric(nchar(Seq)), tlx_sample=as.character(sample), tlx_path=as.character(path), tlx_group=as.character(group), tlx_group_i=as.numeric(group_i), tlx_control=as.logical(control)) %>%
-    dplyr::mutate(tlx_duplicated=duplicated(paste0(Rname, B_Rstart, B_Rend, ifelse(tlx_strand=="+", Rstart, Rend))))
-}
-
-#' @export
-tlx_read_many = function(samples_df, threads=1) {
-  if(!all(samples_df$tlx_exists)) {
-    files_str = paste(samples_df %>% dplyr::filter(!file.exists(samples_df$path)) %>% .$path, collapse="\n")
-    stop(paste0("Some TLX files do not exist: \n", files_str))
-  }
-
-  tlx_df.all = data.frame()
-  if(threads > 1) {
-    doParallel::registerDoParallel(cores=2)
-    tlx_df.all = foreach(f=1:nrow(samples_df)) %dopar% {
-      df = tlx_read(path=samples_df$path[f], sample=samples_df$sample[f], control=samples_df$control[f], group=samples_df$group[f], group_i=samples_df$group_i[f])
-      log("Read tlx file ", f, "/", nrow(samples_df), ": ",  samples_df$path[f])
-      df
-    }
-    log("Merging TLX files...")
-    tlx_df.all = do.call(dplyr::bind_rows, tlx_df.all)
-  } else {
-    for(f in 1:nrow(samples_df)) {
-      log("Reading tlx file ", f, "/", nrow(samples_df), ": ",  samples_df$path[f])
-      tlx_df.f = tlx_read(path=samples_df$path[f], sample=samples_df$sample[f], control=samples_df$control[f], group=samples_df$group[f], group_i=samples_df$group_i[f])
-      tlx_df.all = dplyr::bind_rows(tlx_df.all, tlx_df.f)
-    }
-  }
-
-  tlx_df.all %>%
-    dplyr::inner_join(samples_df, by=c("tlx_sample"="sample"))
 }
 
 tlx_generate_filename_col = function(df, include_sample=F, include_group=F, include_strand=F, include_treatment=T) {
@@ -126,6 +78,117 @@ tlx_generate_filename_col = function(df, include_sample=F, include_group=F, incl
   map_unique_generated_path = gsub("(_| )+", "\\1", map_unique_generated_path)
   names(map_unique_generated_path) = unique_generated_path
   unname(map_unique_generated_path[generated_path])
+}
+
+#' @title tlx_read_samples
+#' @export
+#' @description Read tab-separated-file with description and location of TLX files (generated with HTGTS), one sample per row
+#'
+#' @param annotation_path Path of tab-separated-file with samples information
+#' @param samples_path Path to a folder where actual TLX files are located in case the information in samples tab-separated-information doesn't contain a full path
+#'
+#' @details
+#' Original HTGTS pipeline is hosted on \href{https://github.com/robinmeyers/transloc_pipeline}{github}. A docker image is available
+#' through \href{https://hub.docker.com/repository/docker/sandrejev/htgts}{DockerHUB} (docker://sandrejev/htgts:latest)
+#'
+#' The file should contain following columns:
+#'   \strong{path} - Path to the TLX file. TLX file path is appended to samples_path to get an actual path to TLX sample
+#'   \strong{sample} - Name of the sample
+#'   \strong{control} - A boolean column that specifies whether sample is a control sample or not (values TRUE/FALSE)
+#'   \strong{group} - Name of a group to which a sample belongs (for example it can be different experiments)
+#'
+#' @seealso tlx_read tlx_read_many
+#'
+#' @return A data frame with sample information
+tlx_read_samples = function(annotation_path, samples_path=".") {
+  samples_df = readr::read_tsv(annotation_path, comment="#") %>%
+    dplyr::mutate(path=file.path(samples_path, path)) %>%
+    dplyr::mutate(tlx_exists=file.exists(path))
+  samples_df
+}
+
+#' @title tlx_read
+#' @export
+#' @description Read TLX file (generated with HTGTS)
+#'
+#' @param sample Path to the TLX file
+#' @param sample Name of the sample
+#' @param group Name of a group to which a sample belongs (for example it can be different experiments)
+#' @param group_i Index of the sample inside the group
+#' @param control A boolean value specifying whether sample is a control sample or not
+#'
+#' @details
+#' Original HTGTS pipeline is hosted on \href{https://github.com/robinmeyers/transloc_pipeline}{github}. A docker image is available
+#' through \href{https://hub.docker.com/repository/docker/sandrejev/htgts}{DockerHUB} (docker://sandrejev/htgts:latest)
+#'
+#' @seealso tlx_read_many tlx_read_samples
+#'
+#' @return Data frame from TLX file
+tlx_read = function(path, sample, group="", group_i=1, control=F) {
+  tlx_single_df = readr::read_tsv(path, comment="#", skip=1, col_names=names(tlx_cols()$cols), col_types=tlx_cols()) %>%
+    dplyr::mutate(tlx_strand=as.character(ifelse(Strand<0, "-", "+"))) %>%
+    dplyr::mutate(Seq_length=as.numeric(nchar(Seq)), tlx_sample=as.character(sample), tlx_path=as.character(path), tlx_group=as.character(group), tlx_group_i=as.numeric(group_i), tlx_control=as.logical(control)) %>%
+    dplyr::mutate(tlx_duplicated=duplicated(paste0(Rname, B_Rstart, B_Rend, ifelse(tlx_strand=="+", Rstart, Rend))))
+}
+
+
+#' @title tlx_read_many
+#' @export
+#' @description Read multiple TLX files (generated with HTGTS) using information in samples data, one sample per row
+#'
+#' @param samples_df Path of tab-separated-file with samples information
+#' @param threads Use multiple threads to read TLX files in paralel
+#'
+#' @details
+#' Original HTGTS pipeline is hosted on \href{https://github.com/robinmeyers/transloc_pipeline}{github}. A docker image is available
+#' through \href{https://hub.docker.com/repository/docker/sandrejev/htgts}{DockerHUB} (docker://sandrejev/htgts:latest)
+#'
+#' Data frame with sample information should contain following columns:
+#'   \strong{path} - Path to the TLX file. TLX file path is appended to samples_path to get an actual path to TLX sample
+#'   \strong{sample} - Name of the sample
+#'   \strong{control} - A boolean column that specifies whether sample is a control sample or not (values TRUE/FALSE)
+#'   \strong{group} - Name of a group to which a sample belongs (for example it can be different experiments)
+#'
+#' @seealso tlx_read tlx_read_samples
+#'
+#' @return Data frame from multiple TLX file
+tlx_read_many = function(samples_df, threads=1) {
+  if(!all(samples_df$tlx_exists)) {
+    files_str = paste(samples_df %>% dplyr::filter(!file.exists(samples_df$path)) %>% .$path, collapse="\n")
+    stop(paste0("Some TLX files do not exist: \n", files_str))
+  }
+
+  tlx_df.all = data.frame()
+  if(threads > 1) {
+    doParallel::registerDoParallel(cores=2)
+    tlx_df.all = foreach(f=1:nrow(samples_df)) %dopar% {
+
+      df = tlx_read(
+        path=samples_df$path[f],
+        sample=samples_df$sample[f],
+        control=samples_df$control[f],
+        group=samples_df$group[f],
+        group_i=ifelse("group_i" %in% colnames(samples_df), samples_df$group_i[f], 1))
+      log("Read tlx file ", f, "/", nrow(samples_df), ": ",  samples_df$path[f])
+      df
+    }
+    log("Merging TLX files...")
+    tlx_df.all = do.call(dplyr::bind_rows, tlx_df.all)
+  } else {
+    for(f in 1:nrow(samples_df)) {
+      log("Reading tlx file ", f, "/", nrow(samples_df), ": ",  samples_df$path[f])
+      tlx_df.f = tlx_read(
+        path=samples_df$path[f],
+        sample=samples_df$sample[f],
+        control=samples_df$control[f],
+        group=samples_df$group[f],
+        group_i=ifelse("group_i" %in% colnames(samples_df), samples_df$group_i[f], 1))
+      tlx_df.all = dplyr::bind_rows(tlx_df.all, tlx_df.f)
+    }
+  }
+
+  tlx_df.all %>%
+    dplyr::inner_join(samples_df, by=c("tlx_sample"="sample"))
 }
 
 #' @export
@@ -157,8 +220,35 @@ tlxcov_write_bedgraph = function(tlxcov_df, path, group) {
     dplyr::distinct(bedgraph_path, .keep_all=T)
 }
 
+test = function()
+{
+  devtools::load_all('~/Workspace/breaktools/')
+  samples_df = tlx_read_samples("~/Workspace/Datasets/HTGTS/samples/All_samples.tsv", "~/Workspace/Datasets/HTGTS") %>%
+    dplyr::filter(grepl("concentration", experiment))
+
+  tlx_df = tlx_read_many(samples_df, threads=30)
+  tlx_libfactors = tlx_libfactors(tlx_all_df, normalize_within="identiy", normalize_between="identiy")
+}
+  # if(group=="all") group_cols = c("")[-1]
+  # if(group=="group") group_cols = c("tlx_group")
+  # if(group %in% c("sample", "none")) group_cols = c("tlx_group", "tlx_group_i", "tlx_sample")
+
+#' @title tlx_libfactors
 #' @export
-tlx_libfactors = function(tlx_df, group, normalize_within, normalize_between, normalization_target="smallest")
+#' @description Calculate normalization factors for samples
+#'
+#' @param tlx_df Data frame with information from multiple TLX files
+#' @param group Data groupping strategy (possible values are: all - treat all samples as single group, group - treat each group separately based on tlx_group column)
+#' @param normalize_within Strategy of data normalization within each group (possible values are: none - do not perform any sample normalization, all - normalize all samples realative to their size (separately for control/treatment samples), group - normalizes samples withing each group only (separately for control/treatment samples)
+#' @param normalize_between Strategy of data normalization between groups (possible values are: none - do not perform any between-groups normalization, all - normalize all samples realative to their size (separately for control/treatment samples), group - normalizes samples withing each group only (separately for control/treatment samples)
+#' @param normalization_target
+#'
+#' @details
+#' Original HTGTS pipeline is hosted on \href{https://github.com/robinmeyers/transloc_pipeline}{github}. A docker image is available
+#' through \href{https://hub.docker.com/repository/docker/sandrejev/htgts}{DockerHUB} (docker://sandrejev/htgts:latest)
+#'
+#' @return Data frame from TLX file
+tlx_libfactors = function(tlx_df, group, normalize_within, normalize_between, normalization_target="min")
 {
   if(is.null(normalize_within)) normalize_within = ifelse(group=="sample", "none", group)
   if(is.null(normalize_between)) normalize_between = ifelse(group=="sample", "none", group)
@@ -168,14 +258,15 @@ tlx_libfactors = function(tlx_df, group, normalize_within, normalize_between, no
   validate_normalization_target(normalization_target)
 
   group_cols = tlx_get_group_cols(group)
-  if(normalize_within=="all") normalize_within_cols = c("tlx_control")
-  if(normalize_within=="group") normalize_within_cols = c("tlx_group", "tlx_control")
-  if(normalize_within=="none") normalize_within_cols = c("tlx_sample", "tlx_control")
+  if(normalize_within=="group") normalize_within_cols = c("tlx_group")
+  if(normalize_within=="treatment") normalize_within_cols = c("tlx_group", "tlx_control")
+  if(normalize_within=="none") normalize_within_cols = c("tlx_sample")
   if(normalize_between=="all") normalize_between_cols = c()
   if(normalize_between=="group") normalize_between_cols = setdiff(group_cols, "tlx_control")
-  if(normalize_between=="none") normalize_between_cols = group_cols
+  if(normalize_between=="none") normalize_between_cols = normalize_within_cols
 
-  normalization_target_fun = c("smallest"=min, "largest"=max, "mean"=mean, "median"=median)[[normalization_target]]
+  normalization_target_fun = match.fun(normalization_target)
+
   # Calculate library sizes for each sample and a normalization factor according to normalize argument
   libsizes_df = tlx_df %>%
     dplyr::ungroup() %>%
@@ -184,11 +275,10 @@ tlx_libfactors = function(tlx_df, group, normalize_within, normalize_between, no
     dplyr::summarize(library_size=dplyr::n(), .groups="keep") %>%
     dplyr::ungroup() %>%
     dplyr::group_by_at(normalize_within_cols) %>%
-    dplyr::arrange(tlx_group, tlx_control, tlx_sample) %>%
     dplyr::mutate(library_factor=normalization_target_fun(library_size)/library_size, library_target=ifelse(normalization_target_fun(library_size)==library_size,normalization_target, "")) %>%
     dplyr::ungroup()
   groupsizes_df = libsizes_df %>%
-    dplyr::group_by_at(group_cols) %>%
+    dplyr::group_by_at(normalize_within_cols) %>%
     dplyr::summarize(library_groupsize=sum(library_size*library_factor)) %>%
     dplyr::ungroup() %>%
     dplyr::group_by_at(normalize_between_cols) %>%

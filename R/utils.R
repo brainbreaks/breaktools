@@ -152,20 +152,6 @@ innerJoinByOverlaps = function(query_ranges, subject_ranges) {
   as.data.frame(result_ranges) %>% dplyr::select(-dplyr::matches("_ranges\\."))
 }
 
-test = function()
-{
-  query_ranges = GenomicRanges::makeGRangesFromDataFrame(data.frame(seqnames="chr1", start=1, end=1, col="AAA"),  keep.extra.columns = T)
-  subject_ranges = GenomicRanges::makeGRangesFromDataFrame(data.frame(seqnames="chr1", start=1, end=1, col="BBB"),  keep.extra.columns = T)
-  ranges_list = list(query_ranges, subject_ranges)
-  devtools::load_all('~/Workspace/breaktools/')
-  innerJoinManyByOverlaps(ranges_list)
-
-  devtools::load_all('~/Workspace/breaktools/')
-  query_ranges = data.frame(query_chrom="chr1", query_start=1:2, query_end=1:2, col="AAA") %>% df2ranges(query_chrom, query_start, query_end)
-  subject_ranges = data.frame(subject_chrom="chr1", subject_start=2:3, subject_end=2:3, col="AAA") %>% df2ranges(subject_chrom, subject_start, subject_end)
-  fullJoinByOverlaps(query_ranges, subject_ranges)
-}
-
 #' @title df2ranges
 #' @export
 #' @description Convert data.frame-like object to GRanges
