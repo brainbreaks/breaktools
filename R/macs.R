@@ -49,7 +49,7 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
 
   baseline = sample_df %>%
     dplyr::mutate(sample_density=sample_score/(sample_end-sample_start)) %>%
-    dplyr::filter(0.01>=sample_density & sample_density<=median(sample_density, na.rm=T)*2) %>%
+    dplyr::filter(quantile(sample_density, 0.05)<=sample_density & sample_density<=median(sample_density, na.rm=T)*2) %>%
     dplyr::summarise(sample_baseline=sum(sample_score*(sample_end-sample_start))/sum(sample_end-sample_start)) %>% .$sample_baseline
   writeLines(paste0("Detected baseline is ", baseline, "..."))
 
@@ -88,7 +88,7 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
     dplyr::mutate(island_length=island_end-island_start, island_summit_pos=island_start + island_sammit_offset)
 
   if(nrow(islands_df)>0) {
-    islands_df$island_name = paste0("MACS3_", 1:nrow(islands_df))
+    islands_df$island_name = paste0("MACS3_", stringr::str_pad(1:nrow(islands_df), 3, pad="0"))
     qvalues_ranges = qvalues_df %>% df2ranges(qvalue_chrom, qvalue_start, qvalue_end)
     summit_ranges = islands_df %>% df2ranges(island_chrom, island_summit_pos, island_summit_pos)
     summit2qvalue_df = as.data.frame(IRanges::mergeByOverlaps(qvalues_ranges, summit_ranges)) %>%

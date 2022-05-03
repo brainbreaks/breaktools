@@ -19,7 +19,7 @@ validate_bed_mode = function(mode) {
 }
 
 validate_normalization_target = function(target) {
-  valid_targets = c("smallest", "largest", "mean", "median")
+  valid_targets = c("min", "max")
   if(!(target %in% valid_targets)) { stop(simpleError(paste0("normalization target should be one of: ", paste(valid_targets, collapse=", "), " (Actual:", target, ")"))) }
 }
 
@@ -36,8 +36,8 @@ tlx_get_group_cols = function(group, ignore.strand=T, ignore.control=F) {
   if(group=="treatment") group_cols = c("tlx_group", "tlx_control")
   if(group %in% c("sample", "none")) group_cols = c("tlx_group", "tlx_group_i", "tlx_sample")
 
-  if(!ignore.control) group_cols = unqiue(c(group_cols, "tlx_control"))
-  if(!ignore.strand) group_cols = unqiue(c(group_cols, "tlx_strand"))
+  if(!ignore.control) group_cols = unique(c(group_cols, "tlx_control"))
+  if(!ignore.strand) group_cols = unique(c(group_cols, "tlx_strand"))
 
   return(group_cols)
 }
@@ -167,7 +167,7 @@ tlx_read_many = function(samples_df, threads=1) {
 
   tlx_df.all = data.frame()
   if(threads > 1) {
-    doParallel::registerDoParallel(cores=2)
+    doParallel::registerDoParallel(cores=threads)
     tlx_df.all = foreach(f=1:nrow(samples_df)) %dopar% {
 
       df = tlx_read(
@@ -494,7 +494,8 @@ tlx_calc_copynumber = function(tlx_df, bowtie2_index, max_hits=500, threads=8, t
         writeLines(with(tlx_df, paste0(">", Qname, "\n", QSeq)), con=qseq_fasta)
       }
 
-      cmd = paste0("bowtie2 -f -x ", bowtie_index, " -U ", qseq_fasta ," -k ", max_hits, " --threads ", threads, " -S ", qseq_count)
+      writeLines("Using bowtie2 to find number of copies in reference fasta file...")
+      cmd = paste0("bowtie2 -f -x ", bowtie2_index, " -U ", qseq_fasta ," -k ", max_hits, " --threads ", threads, " -S ", qseq_count)
       system(cmd)
     }
 
@@ -834,7 +835,7 @@ tlxcov_macs2 = function(tlxcov_df, group, params) {
   islands_df = results_df %>%
     dplyr::filter_at(dplyr::vars(dplyr::starts_with("island_")), dplyr::all_vars(!is.na(.))) %>%
     dplyr::select(-dplyr::starts_with("qvalue_")) %>%
-    dplyr::mutate(island_name=paste0("MACS3_", 1:dplyr::n())) %>%
+    dplyr::mutate(island_name=paste0("MACS3_", stringr::str_pad(1:dplyr::n(), 3, pad="0"))) %>%
     dplyr::relocate(island_name)
   qvalues_df = results_df %>%
     dplyr::filter_at(dplyr::vars(dplyr::starts_with("qvalue_")), dplyr::all_vars(!is.na(.))) %>%
