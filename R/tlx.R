@@ -295,7 +295,7 @@ tlx_libfactors = function(tlx_df, normalize_within, normalize_between, normaliza
     dplyr::mutate(library_between_factor=normalization_target_fun(library_groupsize)/library_groupsize) %>%
     data.frame()
   libsizes_df = libsizes_df %>%
-    dplyr::inner_join(groupsizes_df, by=intersect(normalize_within_cols, normalize_between_cols)) %>%
+    dplyr::inner_join(groupsizes_df, by=intersect(colnames(libsizes_df), colnames(groupsizes_df))) %>%
     dplyr::mutate(library_factor=library_within_factor*library_between_factor)
 
   libsizes_df
