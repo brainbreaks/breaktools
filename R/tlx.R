@@ -316,7 +316,7 @@ tlx_libfactors = function(tlx_df, normalize_within, normalize_between, normaliza
 #'   \strong{alignment} - Coordinates of aligned prey sequence
 #' @param ignore.strand Boolean value indicating whether a separate BED file for each strand junctions should be created
 #' @param include_strand Boolean value indicating whether a separate BED file for each control/treatment should be created
-tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.strand=T, ignore.treatment=F) {
+tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.strand=F, ignore.treatment=F) {
   validate_group(group)
   validate_bed_mode(mode)
 
@@ -326,7 +326,7 @@ tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.stra
   writeLines("calculating filenames(s)...")
   if(group=="all") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=!ignore.treatment, include_strand=!ignore.strand))
   if(group=="group") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=!ignore.treatment, include_strand=!ignore.strand))
-  if(group=="sample") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=!ignore.treatment, include_strand=!ignore.strand))
+  if(group %in% c("sample", "none")) tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=!ignore.treatment, include_strand=!ignore.strand))
 
   writeLines("Writing bedgraph file(s)...")
   if(!dir.exists(dirname(path))) dir.create(dirname(path), recursive=T)
@@ -502,7 +502,7 @@ tlx_calc_copynumber = function(tlx_df, bowtie2_index, max_hits=500, threads=8, t
     qseq_count_df = readr::read_tsv(qseq_count, col_names=F, skip=68)
     qseq_cumcount_df = qseq_count_df %>%
       dplyr::group_by(X1) %>%
-      dplyr::summarize(n=n())%>%
+      dplyr::summarize(n=dplyr::n())%>%
       setNames(c("Qname", "tlx_copynumber"))
     readr::write_tsv(qseq_cumcount_df, file=qseq_cumcount)
   } else {
@@ -546,7 +546,7 @@ tlx_mark_dust = function(tlx_df, tmp_dir="tmp") {
   tlx_dust_df = readr::read_tsv(qnames_dust, col_names=names(dust_cols$cols), col_types=dust_cols) %>%
     dplyr::mutate(dust_length=dust_end-dust_start+1, Qname=gsub("^>", "", Qname)) %>%
     dplyr::group_by(Qname) %>%
-    dplyr::summarize(tlx_dust_dust_regions=n(), tlx_dust_length=sum(dust_length), tlx_dust_coordinates=paste0(dust_start, "-", dust_end, collapse="; ")) %>%
+    dplyr::summarize(tlx_dust_dust_regions=dplyr::n(), tlx_dust_length=sum(dust_length), tlx_dust_coordinates=paste0(dust_start, "-", dust_end, collapse="; ")) %>%
     dplyr::mutate(tlx_has_dust=T) %>%
     dplyr::ungroup()
   tlx_df = tlx_df %>%
@@ -609,7 +609,7 @@ tlx_test_hits = function(tlx_df, hits_ranges, paired_samples=T, paired_controls=
   counts_df_incomplete = as.data.frame(IRanges::mergeByOverlaps(hits_ranges_reduced, tlx_ranges)) %>%
     dplyr::rename(compare_group="tlx_group", compare_group_i="tlx_group_i", compare_sample="tlx_sample") %>%
     dplyr::group_by(compare_chrom, compare_start, compare_end, compare_group, compare_group_i, compare_sample, tlx_control, .drop=F) %>%
-    dplyr::summarize(compare_n=n())
+    dplyr::summarize(compare_n=dplyr::n())
   counts_df = dplyr::bind_rows(
     counts_df_incomplete,
     hits_reduced_df %>%
@@ -707,6 +707,50 @@ tlx_extract_bait = function(tlx_df, bait_size, bait_region) {
     dplyr::ungroup() %>%
     dplyr::mutate(tlx_is_bait_chrom=B_Rname==Rname) %>%
     dplyr::mutate(tlx_is_bait_junction=B_Rname==Rname & (abs(tlx_bait_start-Junction)<=bait_region/2 | abs(tlx_bait_end-Junction)<=bait_region/2))
+}
+
+tlx_find_offtargets = function(tlx_df, baits_df) {
+  tlx_offtarget_df = tlx_df %>%
+    dplyr::mutate(tlx_group=paste0(Rname, B_Rname))
+
+    libfactors_bait_df = tlx_libfactors(, normalize_within="group", normalize_between="none", normalization_target="min")
+
+  #
+  # Indentify offtarget candidates
+  #
+  offtargets_params = macs2_params(extsize=50, exttype="opposite", llocal=1e7, minqvalue=0.05, effective_size=1.87e9, maxgap=1e3, minlen=10)
+  tlx_offtarget_df = tlx_df %>%
+    dplyr::filter(!tlx_control & tlx_is_bait_chrom & !tlx_is_bait_junction) %>%
+    dplyr::mutate(tlx_group=bait_chrom)
+  tlxcov_offtargets_df = tlx_offtarget_df %>%
+    tlx_coverage(group="group", extsize=offtargets_params$extsize, exttype=offtargets_params$exttype, libfactors_df=libfactors_bait_df, ignore.strand=T)
+  macs_offtargets = tlxcov_macs2(tlxcov_offtargets_df, group="group", offtargets_params)
+
+  # Export debuging info
+  tlx_write_bed(tlx_offtarget_df, "reports/APH_concentration/offtargets", "all", mode="alignment")
+  tlxcov_write_bedgraph(tlxcov_offtargets_df, "reports/APH_concentration/offtargets", "all")
+  macs_offtargets$islands %>%
+    dplyr::mutate(score=1) %>%
+    dplyr::select(island_chrom, island_start, island_end, score) %>%
+    readr::write_tsv("reports/APH_concentration/offtargets-islands.bed", col_names=F)
+  macs_offtargets$qvalues %>%
+    dplyr::select(qvalue_chrom, qvalue_start, qvalue_end, qvalue_score) %>%
+    readr::write_tsv("reports/APH_concentration/offtargets-qvalues.bedgraph", col_names = F)
+
+
+  #
+  # Mark offtargets
+  #
+  offtargets_df = readr::read_tsv("~/Workspace/Datasets/HTGTS/offtargets_pnas_mm10.tsv")
+  offtargets_extended_df = dplyr::bind_rows(
+    offtargets_df,
+    macs_offtargets$islands %>%
+      dplyr::inner_join(offtargets_df %>% dplyr::distinct(offtarget_bait_chrom, offtarget_bait_start, offtarget_bait_end, offtarget_bait_strand), by=c("island_chrom"="offtarget_bait_chrom")) %>%
+      dplyr::mutate(offtarget_is_primary=F) %>%
+      dplyr::select(
+        offtarget_bait_chrom=island_chrom, offtarget_bait_start, offtarget_bait_end, offtarget_bait_strand,
+        offtarget_chrom=island_chrom, offtarget_start=island_start, offtarget_end=island_end, offtarget_is_primary)
+  )
 }
 
 #' @export
@@ -837,6 +881,7 @@ tlxcov_macs2 = function(tlxcov_df, group, params) {
     dplyr::select(-dplyr::starts_with("qvalue_")) %>%
     dplyr::mutate(island_name=paste0("MACS3_", stringr::str_pad(1:dplyr::n(), 3, pad="0"))) %>%
     dplyr::relocate(island_name)
+
   qvalues_df = results_df %>%
     dplyr::filter_at(dplyr::vars(dplyr::starts_with("qvalue_")), dplyr::all_vars(!is.na(.))) %>%
     dplyr::select(-dplyr::starts_with("island_"))

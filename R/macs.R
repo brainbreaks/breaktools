@@ -57,6 +57,7 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
   if(is.null(control_ranges) | length(control_ranges)==0) {
     control_ranges = sample_ranges
     control_ranges$score=baseline
+    control_ranges$control_score=baseline
   }
   control_df = as.data.frame(control_ranges) %>%
     dplyr::mutate(score=score) %>%
@@ -102,11 +103,31 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
       dplyr::select(-dplyr::matches("island_summit_abs|island_summit_qvalue")) %>%
       dplyr::inner_join(summit2qvalue_df, by="island_name") %>%
       dplyr::inner_join(summit2sample_df, by="island_name")
+
+    sample_ranges1 = as.data.frame(sample_ranges) %>%
+      dplyr::select(sample_chrom=seqnames, sample_start=start, sample_end=end, sample_score=score) %>%
+      df2ranges(sample_chrom, sample_start, sample_end)
+    control_ranges1 = as.data.frame(control_ranges) %>%
+      dplyr::select(control_chrom=seqnames, control_start=start, control_end=end, control_score=score) %>%
+      df2ranges(control_chrom, control_start, control_end)
+    baseline_ranges = innerJoinByOverlaps(sample_ranges1, control_ranges1) %>%
+      dplyr::filter(sample_score>=control_score) %>%
+      df2ranges(sample_chrom, sample_start, sample_end) %>%
+      GenomicRanges::reduce() %>%
+      as.data.frame() %>%
+      dplyr::select(island_extended_chrom=seqnames, island_extended_start=start, island_extended_end=end) %>%
+      df2ranges(island_extended_chrom, island_extended_start, island_extended_end)
+    islands_df = islands_df %>%
+      df2ranges(island_chrom, island_start, island_end) %>%
+      leftJoinByOverlaps(baseline_ranges) %>%
+      dplyr::select(-island_extended_chrom)
   } else {
     islands_df$island_name = character()
     islands_df$island_summit_qvalue = double()
     islands_df$island_summit_abs = double()
     islands_df$island_summit_pos = double()
+    islands_df$island_extended_start = double()
+    islands_df$island_extended_end = double()
   }
 
   # Find coverage areas not overlapping with islands
@@ -124,7 +145,7 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
   islands_df = islands_df %>%
     dplyr::inner_join(island2baseline_df, by="island_name") %>%
     dplyr::mutate(island_snr=island_summit_abs/baseline) %>%
-    dplyr::select(island_name, island_chrom, island_start, island_end, island_length, island_summit_pos, island_summit_qvalue, island_summit_abs, island_baseline, island_snr)
+    dplyr::select(island_name, island_chrom, island_start, island_end, island_extended_start, island_extended_end, island_length, island_summit_pos, island_summit_qvalue, island_summit_abs, island_baseline, island_snr)
 
   islands_df %>%
     dplyr::mutate(strand=".") %>%
