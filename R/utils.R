@@ -137,18 +137,19 @@ fullJoinByOverlaps = function(query_ranges, subject_ranges) {
 #'
 #' @param query_ranges Query ranges
 #' @param subject_ranges Subject ranges
+#' @param ... Further parameters are passed to IRanges::mergeByOverlaps
 #'
 #' @return A data frame with two ranges objects inner-joined based on the overlap between them
 #' @examples
 #' query_ranges = data.frame(query_chrom="chr1", query_start=1:2, query_end=1:2, col="AAA") %>% df2ranges(query_chrom, query_start, query_end)
 #' subject_ranges = data.frame(subject_chrom="chr1", subject_start=2:3, subject_end=2:3, col="AAA") %>% df2ranges(subject_chrom, subject_start, subject_end)
 #' innerJoinByOverlaps(query_ranges, subject_ranges)
-innerJoinByOverlaps = function(query_ranges, subject_ranges) {
+innerJoinByOverlaps = function(query_ranges, subject_ranges, ...) {
   r = separate_target_subject_columns(query_ranges, subject_ranges)
   query_ranges = r$query_ranges
   subject_ranges = r$subject_ranges
 
-  result_ranges = IRanges::mergeByOverlaps(query_ranges, subject_ranges)
+  result_ranges = IRanges::mergeByOverlaps(query_ranges, subject_ranges, ...)
   as.data.frame(result_ranges) %>% dplyr::select(-dplyr::matches("_ranges\\."))
 }
 
