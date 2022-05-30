@@ -361,6 +361,22 @@ get_bowtie = function(sequences, fasta, threads=30, tmp_dir="tmp") {
   primers_alignments
 }
 
+#' @title clear_tmpdir
+#' @export
+#' @description Clear cache directory from old files
+#'
+#' @param tmp_dir Path to cache directory
+#' @param max_age Max age of files in seconds. Remove everything older than specified age
+clear_tmpdir = function(tmp_dir="tmp", max_age=10080) {
+  for(f in list.files(tmp_dir, recursive=T, full.names=T)) {
+    ctime = file.info(f)$ctime
+    cdiff = as.numeric(difftime(Sys.time(), ctime, units = "secs"))
+    if(cdiff>max_age) {
+      file.remove(f)
+    }
+  }
+}
+
 #' @title get_blast
 #' @export
 #' @description Use BOWTIE to search for sequences in FASTA file

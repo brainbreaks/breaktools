@@ -475,23 +475,27 @@ tlx_mark_rand_chromosomes = function(tlx_df) {
 #' @param max_hits Maximum number of matches to search for using bowtie2
 #' @param threads Number of threads used in bowtie2 when aligning pray sequences
 #' @param tmp_dir Path to folder with cached results
+#' @param max_age Max age of files in seconds. Remove everything older than specified age
 #'
 #' @return Data frame with copy number in \code{tlx_copynumber} column
-tlx_calc_copynumber = function(tlx_df, bowtie2_index, max_hits=500, threads=8, tmp_dir="tmp") {
+tlx_calc_copynumber = function(tlx_df, bowtie2_index, max_hits=500, threads=8, tmp_dir="tmp", max_age=10080) {
   if(!bedr::check.binary("bowtie2")) {
     stop("dustmasker executible not found")
   }
 
   dir.create(tmp_dir, recursive=T, showWarnings=F)
-  qnames_hash = openssl::md5(paste0(tlx_df$Qname, collapse=""))
-  qseq_fasta = file.path(tmp_dir, paste0(qnames_hash, ".fa"))
-  qseq_count = file.path(tmp_dir, paste0(qnames_hash, ".count"))
-  qseq_cumcount = file.path(tmp_dir, paste0(qnames_hash, ".cumcount"))
+  clear_tmpdir(tmp_dir=tmp_dir, max_age=max_age)
+
+  qseq_vec = unique(tlx_df$QSeq)
+  qseq_hash = openssl::md5(paste0(qseq_vec, collapse=""))
+  qseq_fasta = file.path(tmp_dir, paste0(qseq_hash, ".fa"))
+  qseq_count = file.path(tmp_dir, paste0(qseq_hash, ".count"))
+  qseq_cumcount = file.path(tmp_dir, paste0(qseq_hash, ".cumcount"))
 
   if(!file.exists(qseq_cumcount)) {
     if(!file.exists(qseq_count)) {
       if(!file.exists(qseq_fasta)) {
-        writeLines(with(tlx_df, paste0(">", Qname, "\n", QSeq)), con=qseq_fasta)
+        writeLines(with(tlx_df, paste0(">", qseq_vec, "\n", qseq_vec)), con=qseq_fasta)
       }
 
       writeLines("Using bowtie2 to find number of copies in reference fasta file...")
@@ -503,15 +507,18 @@ tlx_calc_copynumber = function(tlx_df, bowtie2_index, max_hits=500, threads=8, t
     qseq_cumcount_df = qseq_count_df %>%
       dplyr::group_by(X1) %>%
       dplyr::summarize(n=dplyr::n())%>%
-      setNames(c("Qname", "tlx_copynumber"))
+      setNames(c("QSeq", "tlx_copynumber"))
     readr::write_tsv(qseq_cumcount_df, file=qseq_cumcount)
   } else {
     qseq_cumcount_df = readr::read_tsv(qseq_cumcount)
   }
 
+  Sys.setFileTime(qseq_cumcount, Sys.time())
+
   tlx_df %>%
     dplyr::select(-dplyr::matches("tlx_copynumber")) %>%
-    dplyr::left_join(qseq_cumcount_df, by="Qname")
+    dplyr::left_join(qseq_cumcount_df, by="QSeq") %>%
+    dplyr::mutate(tlx_copynumber=tidyr::replace_na(tlx_copynumber, 0))
 }
 
 
@@ -521,38 +528,44 @@ tlx_calc_copynumber = function(tlx_df, bowtie2_index, max_hits=500, threads=8, t
 #'
 #' @param tlx_df Data frame with information from multiple TLX files
 #' @param tmp_dir Path to folder with cached results
+#' @param max_age Max age of files in seconds. Remove everything older than specified age
 #'
 #' @return Data frame with dust marked using \code{tlx_has_dust} column
-tlx_mark_dust = function(tlx_df, tmp_dir="tmp") {
+tlx_mark_dust = function(tlx_df, tmp_dir="tmp", max_age=10080) {
   if(!bedr::check.binary("dustmasker")) {
     stop("dustmasker executible not found")
   }
 
   dir.create(tmp_dir, recursive=T, showWarnings=F)
-  qnames_hash = openssl::md5(paste0(tlx_df$Qname, collapse=""))
-  qnames_fasta = file.path(tmp_dir, paste0(qnames_hash, ".fa"))
-  qnames_dust = file.path(tmp_dir, paste0(qnames_hash, ".dust"))
+  clear_tmpdir(tmp_dir=tmp_dir, max_age=max_age)
 
-  if(!file.exists(qnames_dust)) {
-    if(!file.exists(qnames_fasta)) {
+  qseq_vec = unique(tlx_df$QSeq)
+  qseq_hash = openssl::md5(paste(qseq_vec, collapse=""))
+  qseq_fasta = file.path(tmp_dir, paste0(qseq_hash, ".fa"))
+  qseq_dust = file.path(tmp_dir, paste0(qseq_hash, ".dust"))
+
+  if(!file.exists(qseq_dust)) {
+    if(!file.exists(qseq_fasta)) {
       writeLines("Writing temporary fasta file with sequences...")
-      writeLines(with(tlx_df, paste0(">", Qname, "\n", QSeq)), con=qnames_fasta)
+      writeLines(with(tlx_df, paste0(">", QSeq, "\n", QSeq)), con=qseq_fasta)
     }
     writeLines("Using dustmasker to calculate low complexity regions...")
-    system(paste0("dustmasker -in ", qnames_fasta, " -out ", qnames_dust, " -outfmt acclist"))
+    system(paste0("dustmasker -in ", qseq_fasta, " -out ", qseq_dust, " -outfmt acclist"))
   }
 
-  dust_cols = readr::cols(Qname=readr::col_character(), dust_start=readr::col_double(), dust_end=readr::col_double())
-  tlx_dust_df = readr::read_tsv(qnames_dust, col_names=names(dust_cols$cols), col_types=dust_cols) %>%
-    dplyr::mutate(dust_length=dust_end-dust_start+1, Qname=gsub("^>", "", Qname)) %>%
-    dplyr::group_by(Qname) %>%
+  dust_cols = readr::cols(QSeq=readr::col_character(), dust_start=readr::col_double(), dust_end=readr::col_double())
+  tlx_dust_df = readr::read_tsv(qseq_dust, col_names=names(dust_cols$cols), col_types=dust_cols) %>%
+    dplyr::mutate(dust_length=dust_end-dust_start+1, QSeq=gsub("^>", "", QSeq)) %>%
+    dplyr::group_by(QSeq) %>%
     dplyr::summarize(tlx_dust_dust_regions=dplyr::n(), tlx_dust_length=sum(dust_length), tlx_dust_coordinates=paste0(dust_start, "-", dust_end, collapse="; ")) %>%
     dplyr::mutate(tlx_has_dust=T) %>%
     dplyr::ungroup()
   tlx_df = tlx_df %>%
     dplyr::select(-dplyr::matches("tlx_dust_dust_regions|tlx_dust_length|tlx_dust_prop|tlx_dust_coordinates|tlx_has_dust")) %>%
-    dplyr::left_join(tlx_dust_df, by="Qname") %>%
+    dplyr::left_join(tlx_dust_df, by="QSeq") %>%
     dplyr::mutate(tlx_has_dust=tidyr::replace_na(tlx_has_dust, F), tlx_dust_prop=tlx_dust_length/Seq_length)
+  Sys.setFileTime(qseq_dust, Sys.time())
+
   tlx_df
 }
 
