@@ -426,12 +426,11 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ign
   tlxcov_df %>%
     dplyr::group_by_at(group_cols) %>%
     dplyr::do((function(z){
-      z
+      zz <<- z
       z_ranges = GenomicRanges::makeGRangesFromDataFrame(z %>% dplyr::mutate(seqnames=tlxcov_chrom, start=tlxcov_start, end=tlxcov_end), ignore.strand=T, keep.extra.columns=T)
       cov_ranges = as(GenomicRanges::coverage(z_ranges, weight=z$tlxcov_pileup.norm), "GRanges")
       ret_df = as.data.frame(cov_ranges) %>%
         dplyr::rename(tlxcov_chrom="seqnames", tlxcov_start="start", tlxcov_end="end", tlxcov_pileup="score") %>%
-        dplyr::mutate(tlxcov_end=tlxcov_end+1) %>%
         dplyr::select(matches("tlxcov_"))
       ret_df
     })(.)) %>%
@@ -876,6 +875,8 @@ tlxcov_macs2 = function(tlxcov_df, group, params) {
     dplyr::group_by_at(group_cols) %>%
     dplyr::do((function(z){
       zz<<-z
+      # z = tlxcov_df %>% dplyr::filter(tlxcov_chrom=="chr3")
+      # z = tlxcov_df %>% dplyr::filter(tlxcov_chrom=="chr5")
       tlxcov_ranges = z %>% dplyr::mutate(score=tlxcov_pileup) %>% df2ranges(tlxcov_chrom, tlxcov_start, tlxcov_end)
       sample_ranges = tlxcov_ranges[!tlxcov_ranges$tlx_control]
       control_ranges = tlxcov_ranges[tlxcov_ranges$tlx_control]
@@ -892,7 +893,7 @@ tlxcov_macs2 = function(tlxcov_df, group, params) {
   islands_df = results_df %>%
     dplyr::filter_at(dplyr::vars(dplyr::starts_with("island_")), dplyr::all_vars(!is.na(.))) %>%
     dplyr::select(-dplyr::starts_with("qvalue_")) %>%
-    dplyr::mutate(island_name=paste0("MACS3_", stringr::str_pad(1:dplyr::n(), 3, pad="0"))) %>%
+    dplyr::mutate(island_name=paste0("MACS3_", stringr::str_pad((0:(dplyr::n()))[-1], 3, pad="0"))) %>%
     dplyr::relocate(island_name)
 
   qvalues_df = results_df %>%

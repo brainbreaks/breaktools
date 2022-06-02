@@ -82,20 +82,21 @@ separate_target_subject_columns = function(query_ranges, subject_ranges) {
 #'
 #' @param query_ranges Query ranges
 #' @param subject_ranges Subject ranges
+#' @param ... Further parameters are passed to IRanges::mergeByOverlaps
 #'
 #' @return A data frame with two ranges objects left-joined based on the overlap between them
 #' @examples
 #' query_ranges = data.frame(query_chrom="chr1", query_start=1:2, query_end=1:2, col="AAA") %>% df2ranges(query_chrom, query_start, query_end)
 #' subject_ranges = data.frame(subject_chrom="chr1", subject_start=2:3, subject_end=2:3, col="AAA") %>% df2ranges(subject_chrom, subject_start, subject_end)
 #' leftJoinByOverlaps(query_ranges, subject_ranges)
-leftJoinByOverlaps = function(query_ranges, subject_ranges) {
+leftJoinByOverlaps = function(query_ranges, subject_ranges, ...) {
   r = separate_target_subject_columns(query_ranges, subject_ranges)
   query_ranges = r$query_ranges
   subject_ranges = r$subject_ranges
 
   query_ranges$query_id = 1:length(query_ranges)
   subject_ranges$subject_id = 1:length(subject_ranges)
-  result_df = as.data.frame(IRanges::mergeByOverlaps(query_ranges, subject_ranges)) %>% dplyr::select(-dplyr::matches("^(query|subject)_ranges\\."))
+  result_df = as.data.frame(IRanges::mergeByOverlaps(query_ranges, subject_ranges, ...)) %>% dplyr::select(-dplyr::matches("^(query|subject)_ranges\\."))
   result_df = dplyr::bind_rows(result_df, as.data.frame(GenomicRanges::mcols(query_ranges)) %>% dplyr::anti_join(result_df %>% dplyr::select(query_id), by="query_id"))
   result_df = result_df %>% dplyr::select(-dplyr::matches("^(query|subject)_ranges\\.")) %>% dplyr::select(-dplyr::matches("^query_id|subject_id$"))
 
@@ -108,20 +109,21 @@ leftJoinByOverlaps = function(query_ranges, subject_ranges) {
 #'
 #' @param query_ranges Query ranges
 #' @param subject_ranges Subject ranges
+#' @param ... Further parameters are passed to IRanges::mergeByOverlaps
 #'
 #' @return A data frame with two ranges objects full-joined based on the overlap between them
 #' @examples
 #' query_ranges = data.frame(query_chrom="chr1", query_start=1:2, query_end=1:2, col="AAA") %>% df2ranges(query_chrom, query_start, query_end)
 #' subject_ranges = data.frame(subject_chrom="chr1", subject_start=2:3, subject_end=2:3, col="AAA") %>% df2ranges(subject_chrom, subject_start, subject_end)
 #' fullJoinByOverlaps(query_ranges, subject_ranges)
-fullJoinByOverlaps = function(query_ranges, subject_ranges) {
+fullJoinByOverlaps = function(query_ranges, subject_ranges, ...) {
   r = separate_target_subject_columns(query_ranges, subject_ranges)
   query_ranges = r$query_ranges
   subject_ranges = r$subject_ranges
 
   query_ranges$query_id = 1:length(query_ranges)
   subject_ranges$subject_id = 1:length(subject_ranges)
-  result_df = as.data.frame(IRanges::mergeByOverlaps(query_ranges, subject_ranges))
+  result_df = as.data.frame(IRanges::mergeByOverlaps(query_ranges, subject_ranges, ...))
   result_df = dplyr::bind_rows(
     result_df,
     as.data.frame(GenomicRanges::mcols(query_ranges)) %>% dplyr::anti_join(result_df %>% dplyr::select(query_id), by="query_id"),
