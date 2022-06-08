@@ -204,9 +204,11 @@ tlxcov_write_bedgraph = function(tlxcov_df, path, group) {
   ignore.strand = !("tlx_strand" %in% colnames(tlxcov_df))
 
   writeLines("calculating filenames(s)...")
-  if(group=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(dirname(path), "/", basename(path), "-", tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph"))
-  if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(dirname(path), "/", basename(path), "-", tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph"))
-  if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=paste0(dirname(path), "/", basename(path), "-", tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=!ignore.strand), ".bedgraph"))
+  path = paste0(path, "XXXXXXXXXXXX")
+  print(basename(path))
+  if(group=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=gsub("XXXXXXXXXXXX", "", paste0(dirname(path), "/", basename(path), ifelse(basename(path)=="XXXXXXXXXXXX", "", "-"), tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph")))
+  if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=gsub("XXXXXXXXXXXX", "", paste0(dirname(path), "/", basename(path), ifelse(basename(path)=="XXXXXXXXXXXX", "", "-"), tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph")))
+  if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=gsub("XXXXXXXXXXXX", "", paste0(dirname(path), "/", basename(path), ifelse(basename(path)=="XXXXXXXXXXXX", "", "-"), tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=!ignore.strand), ".bedgraph")))
   if(!ignore.strand) tlxcov_df = tlxcov_df %>% dplyr::mutate(tlxcov_pileup=ifelse(tlx_strand=="+", 1, -1)*tlxcov_pileup)
 
 
@@ -223,8 +225,9 @@ tlxcov_write_bedgraph = function(tlxcov_df, path, group) {
     })(.))
 
   tlxcov_df %>%
-    dplyr::select(bedgraph_path=g, dplyr::matches("tlx_group|tlx_sample|tlx_control")) %>%
-    dplyr::distinct(bedgraph_path, .keep_all=T)
+    dplyr::select(bedgraph_path=g) %>%
+    dplyr::distinct(bedgraph_path, .keep_all=T) %>%
+    data.frame()
 }
 
 test = function()
@@ -395,10 +398,15 @@ tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.stra
   tlx_bed_df %>%
     dplyr::group_by(g) %>%
     dplyr::do((function(z){
-      z.out = z %>% dplyr::select(Rname, start, end, name, mapqual, tlx_strand)
-      z.path = file.path(dirname(path), paste0(basename(path), "-", z$g[1], ".bed"))
+      z.out = z %>%
+        dplyr::mutate(thickStart=start, thickEnd=end, score=1, rgb=dplyr::case_when(tlx_strand=="+"~"255,0,0", tlx_strand=="-"~"0,0,255", T~"0,0,0")) %>%
+        dplyr::select(Rname, start, end, name, score, tlx_strand, thickStart, thickEnd, rgb)
+      z.path = paste0(path, "XXXXXXXXXXXX")
+      z.path = file.path(dirname(z.path), paste0(basename(z.path), ifelse(basename(z.path)=="XXXXXXXXXXXX", "", "-"), z$g[1], ".bed"))
+      z.path = gsub("XXXXXXXXXXXX", "", z.path)
       writeLines(paste0("Writing to file '", z.path, "'"))
-      readr::write_tsv(z.out, file=z.path, col_names=F)
+      # writeLines('track itemRgb=On visibility=2 colorByStrand="255,0,0 0,0,255"', con=z.path)
+      readr::write_tsv(z.out, file=z.path, col_names=F, append=T)
       data.frame()
     })(.))
 
