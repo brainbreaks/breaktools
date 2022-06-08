@@ -19,7 +19,7 @@ validate_bed_mode = function(mode) {
 }
 
 validate_normalization_target = function(target) {
-  valid_targets = c("min", "max")
+  valid_targets = c("min", "max", "identity", "samplecount_min", "samplecount_max")
   if(!(target %in% valid_targets)) { stop(simpleError(paste0("normalization target should be one of: ", paste(valid_targets, collapse=", "), " (Actual:", target, ")"))) }
 }
 
@@ -242,7 +242,50 @@ test = function()
   tlx_df = tlx_read_many(samples_df, threads=30)
   tlx_libfactors = tlx_libfactors(tlx_all_df, normalize_within="treatment", normalize_between="treatment")
   tlxcov_df = tlx_coverage(tlx_df, group="treatment", extsize=20e3, exttype="symmertrical", libfactors_df=tlx_libfactors, ignore.strand=T)
+
+  libsizes_df = tlx_df %>%
+    tlx_libsizes(within=c("tlx_group", "tlx_control"), between="tlx_group") %>%
+    tlx_libfactors_within(max(library_size)/library_size) %>%
+    tlx_libfactors_between(max(library_between_samples)/library_between_samples)
 }
+
+tlx_libsizes = function(tlx_df, within=NULL, between=NULL) {
+  sample_cols = setdiff(colnames(tlx_df), names(tlx_cols()$cols))
+  sample_cols = setdiff(sample_cols, c("misprimed_max", "tlx_duplicated", "tlx_strand", "QSeq", "Qname", "Seq_length",  "tlx_bait_start", "tlx_bait_end", "tlx_is_bait_chrom", "tlx_is_bait_junction", "tlx_dust_dust_regions", "tlx_dust_length", "tlx_dust_coordinates", "tlx_has_dust", "tlx_dust_prop", "tlx_copynumber", "tlx_id", "tlx_is_offtarget"))
+  sample_cols = unique(c(sample_cols, "library_size"))
+
+  tlx_df %>%
+    dplyr::ungroup() %>%
+    dplyr::group_by(tlx_sample) %>%
+    dplyr::mutate(library_size=dplyr::n()) %>%
+    dplyr::select_at(sample_cols) %>%
+    dplyr::slice(1) %>%
+    dplyr::ungroup() %>%
+    dplyr::group_by_at(within) %>%
+    dplyr::mutate(library_within_group=paste0(within, "=", dplyr::cur_group(), collapse=","), library_within_samples=length(unique(tlx_sample))) %>%
+    dplyr::group_by_at(between) %>%
+    dplyr::mutate(library_between_group=paste0(between, "=", dplyr::cur_group(), collapse=","), library_between_samples=length(unique(tlx_sample))) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(library_within_factor=1, library_between_factor=1, library_factor=1) %>%
+    dplyr::arrange(library_between_group, library_within_group) %>%
+  dplyr::select(tlx_group, tlx_control, tlx_sample, dplyr::starts_with("library"))
+}
+
+tlx_libfactors_within = function(libsizes_df, factor) {
+  libsizes_df %>%
+    dplyr::group_by(library_within_group) %>%
+    dplyr::mutate(library_within_factor={{ factor }}, library_factor=library_within_factor*library_between_factor, library_within_size=library_size*library_within_factor) %>%
+    dplyr::mutate(library_within_groupsize=sum(library_within_size)) %>%
+    dplyr::ungroup()
+}
+
+tlx_libfactors_between = function(libsizes_df, factor) {
+  libsizes_df %>%
+    dplyr::group_by(library_between_group) %>%
+    dplyr::mutate(library_between_factor={{ factor }}, library_factor=library_within_factor*library_between_factor) %>%
+    ungroup()
+}
+
 
 #' @title tlx_libfactors
 #' @export
@@ -258,24 +301,40 @@ test = function()
 #'   \strong{treatment} - normalize treatments within each group
 #'   \strong{group} - normalizes all groups and treatments accross all dataset
 #' @param normalization_target Name of the function that should be used for normalization (\strong{group} - normalize to smallest group/sample, \strong{max} - normalize to largest group/sample)
+#' @param normalization_samplecount Whether each group have to be additionally normalized with samples number in that group
 #'
 #' @seealso tlx_coverage
 #'
 #' @return Data frame with normalization factors for each sample
-tlx_libfactors = function(tlx_df, normalize_within, normalize_between, normalization_target="min")
+tlx_libfactors = function(tlx_df, normalize_within, normalize_between, normalization_within_target="min", normalization_between_target="min")
 {
   validate_group_within(normalize_within)
   validate_group_between(normalize_between)
-  validate_normalization_target(normalization_target)
+  validate_normalization_target(normalization_within_target)
+  validate_normalization_target(normalization_between_target)
 
   if(normalize_within=="group") normalize_within_cols = c("tlx_group")
   if(normalize_within=="treatment") normalize_within_cols = c("tlx_group", "tlx_control")
   if(normalize_within=="none") normalize_within_cols = c("tlx_sample")
-  if(normalize_between=="group") normalize_between_cols = c()
-  if(normalize_between=="treatment") normalize_between_cols = setdiff(normalize_within_cols, "tlx_control")
-  if(normalize_between=="none") normalize_between_cols = normalize_within_cols
+  if(normalize_between=="group") {
+    normalize_group_cols = c("tlx_group")
+    normalize_between_cols = ""[-1]
+  }
+  if(normalize_between=="treatment") {
+    normalize_group_cols = c("tlx_group", "tlx_control")
+    normalize_between_cols = c(normalize_within_cols, "tlx_control")
+  }
+  if(normalize_between=="none") {
+    normalize_group_cols = c("tlx_sample")
+    normalize_between_cols = normalize_within_cols
+  }
 
-  normalization_target_fun = match.fun(normalization_target)
+  normalization_within_target_fun = match.fun(normalization_within_target)
+  if(grepl("^samplecount", normalization_between_target)) {
+    normalization_between_target_fun = identity
+  } else {
+    normalization_between_target_fun = match.fun(normalization_between_target)
+  }
 
   # Calculate library sizes for each sample and a normalization factor according to normalize argument
   libsizes_df = tlx_df %>%
@@ -285,14 +344,17 @@ tlx_libfactors = function(tlx_df, normalize_within, normalize_between, normaliza
     dplyr::summarize(library_size=dplyr::n(), .groups="keep") %>%
     dplyr::ungroup() %>%
     dplyr::group_by_at(normalize_within_cols) %>%
-    dplyr::mutate(library_within_factor=normalization_target_fun(library_size)/library_size, library_target=ifelse(normalization_target_fun(library_size)==library_size,normalization_target, "")) %>%
+    dplyr::mutate(library_target=ifelse(normalization_within_target_fun(library_size)==library_size, normalization_within_target, ""), library_within_factor=normalization_within_target_fun(library_size)/library_size) %>%
     dplyr::ungroup()
   groupsizes_df = libsizes_df %>%
-    dplyr::group_by_at(normalize_within_cols) %>%
-    dplyr::summarize(library_groupsize=sum(library_size*library_within_factor)) %>%
+    dplyr::group_by_at(normalize_group_cols) %>%
+    dplyr::summarize(library_between_samplecount=length(unique(tlx_sample)), library_groupsize=sum(library_size*library_within_factor)) %>%
     dplyr::ungroup() %>%
     dplyr::group_by_at(normalize_between_cols) %>%
-    dplyr::mutate(library_between_factor=normalization_target_fun(library_groupsize)/library_groupsize) %>%
+    dplyr::mutate(
+      library_between_samplefactor=library_between_samplecount/library_between_samplecount,
+      library_between_junctionfactor=normalization_between_target_fun(library_groupsize)/library_groupsize,
+      library_between_factor=ifelse(normalization_target=="samplecount", library_between_samplefactor, library_between_junctionfactor)) %>%
     data.frame()
   libsizes_df = libsizes_df %>%
     dplyr::inner_join(groupsizes_df, by=intersect(colnames(libsizes_df), colnames(groupsizes_df))) %>%
