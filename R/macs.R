@@ -6,8 +6,8 @@ macs_cols = function() {
   )
 }
 
-macs2_params = function(extsize=1e5, exttype="symetrical", llocal=1e7, minqvalue=0.01, maxgap=5e5, minlen=200, effective_size=1.87e9, baseline=0) {
-  as.data.frame(list(exttype=exttype, extsize=extsize, llocal=llocal, minqvalue=minqvalue, maxgap=maxgap, minlen=minlen, effective_size=effective_size, baseline=baseline))
+macs2_params = function(extsize=1e5, exttype="symetrical", llocal=1e7, minqvalue=NA_real_, minpvalue=NA_real_, maxgap=5e5, minlen=200, effective_size=1.87e9, baseline=0) {
+  as.data.frame(list(exttype=exttype, extsize=extsize, llocal=llocal, minqvalue=minqvalue, minpvalue=minpvalue, maxgap=maxgap, minlen=minlen, effective_size=effective_size, baseline=baseline))
 }
 
 
@@ -57,6 +57,10 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
     dplyr::mutate(sample_baseline=tidyr::replace_na(sample_baseline, 0), sample_baseline=pmax(sample_baseline, params$baseline))
   writeLines(paste0("Detected baseline is \n", paste(paste0("    ", baseline_df$sample_chrom, "=", format(round(baseline_df$sample_baseline, 5), nsmall=5)), collapse="\n")))
 
+  if(!is.na(params$minqvalue) + !is.na(params$minqvalue) != 1) {
+    stop("Please provide either minimal q-value or p-value")
+  }
+
   control_path = paste0(tmp_prefix, "-control.bdg")
   if(is.null(control_ranges) | length(control_ranges)==0) {
     control_ranges = sample_df %>%
@@ -86,13 +90,20 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
       dplyr::rowwise() %>%
       dplyr::mutate(pvalue=pgamma(sample_score, shape=control_score, rate=1, lower.tail=F)) %>%
       dplyr::ungroup() %>%
+      dplyr::mutate(qvalue_pvalue=pvalue) %>%
+      dplyr::mutate(qvalue_pvalue=ifelse(qvalue_pvalue==0, 315, -log10(qvalue_pvalue))) %>%
+      dplyr::mutate(qvalue_qvalue=qvalue::qvalue(pvalue)$qvalues) %>%
+      dplyr::mutate(qvalue_qvalue=ifelse(qvalue_qvalue==0, 315, -log10(qvalue_qvalue))) %>%
       # dplyr::mutate(qvalue_score=qvalue::qvalue(pvalue)$qvalues) %>%
       # dplyr::mutate(qvalue_score=ifelse(qvalue_score==0, 315, -log10(qvalue_score))) %>% # TODO: change 315 to something better
       # dplyr::mutate(qvalue_score=tidyr::replace_na(qvalue_score, 0)) %>%
-      dplyr::mutate(pvalue_score=ifelse(pvalue==0, 315, -log10(pvalue))) %>%
-      dplyr::mutate(qvalue_score=0) %>%
-      dplyr::select(qvalue_chrom=seqnames, qvalue_start=start, qvalue_end=end, qvalue_score, pvalue_score)
-    qvalues_df %>% dplyr::select(qvalue_chrom, qvalue_start, qvalue_end, pvalue_score) %>% readr::write_tsv(file=qvalue_path, col_names=F)
+      # dplyr::mutate(pvalue_score=ifelse(pvalue==0, 315, -log10(pvalue))) %>%
+      # dplyr::mutate(qvalue_score=0) %>%
+      dplyr::select(qvalue_chrom=seqnames, qvalue_start=start, qvalue_end=end, qvalue_qvalue, qvalue_pvalue)
+    qvalues_df %>%
+      dplyr::mutate(score=dplyr::case_when(!is.na(params$minqvalue)~qvalue_qvalue, T~qvalue_pvalue)) %>%
+      dplyr::select(qvalue_chrom, qvalue_start, qvalue_end, score) %>%
+      readr::write_tsv(file=qvalue_path, col_names=F)
   }
   # qvalues_df = readr::read_tsv(qvalue_path, col_names=names(qvalue_cols$cols), col_types=qvalue_cols)
   # table(qvalues_df$qvalue_score)
@@ -101,8 +112,9 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
   #   innerJoinByOverlaps(sample_ranges)
   # plot(x$qvalue_score, x$sample_score)
 
+  cutoff = ifelse(!is.na(params$minqvalue), params$minqvalue, params$minpvalue)
   cmd_bdgpeakcall = stringr::str_glue("macs3 bdgpeakcall -i {qvalue} -c {cutoff} --min-length {format(minlen, scientific=F)} --max-gap {format(maxgap, scientific=F)} -o {output}",
-     qvalue=qvalue_path, output=peaks_path, cutoff=-log10(params$minqvalue), maxgap=params$maxgap, minlen=params$minlen)
+     qvalue=qvalue_path, output=peaks_path, cutoff=-log10(cutoff), maxgap=params$maxgap, minlen=params$minlen)
   writeLines(cmd_bdgpeakcall)
   system(cmd_bdgpeakcall)
 

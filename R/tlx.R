@@ -213,12 +213,12 @@ tlxcov_write_bedgraph = function(tlxcov_df, path, group) {
 
 
   writeLines("Writing bedgraph file(s)...")
-  if(!dir.exists(dirname(path))) dir.create(dirname(path), recursive=T)
   tlxcov_df %>%
     dplyr::group_by(g) %>%
     dplyr::do((function(z){
       z.out = z %>% dplyr::select(tlxcov_chrom, tlxcov_start, tlxcov_end, tlxcov_pileup)
       z.path = z$g[1]
+      if(!dir.exists(dirname(z.path))) dir.create(dirname(z.path), recursive=T)
       writeLines(paste0("Writing to file '", z.path, "'"))
       readr::write_tsv(z.out, file=z.path, col_names=F)
       data.frame()
@@ -394,7 +394,6 @@ tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.stra
   if(group %in% c("sample", "none")) tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=!ignore.treatment, include_strand=!ignore.strand))
 
   writeLines("Writing bedgraph file(s)...")
-  if(!dir.exists(dirname(path))) dir.create(dirname(path), recursive=T)
   tlx_bed_df %>%
     dplyr::group_by(g) %>%
     dplyr::do((function(z){
@@ -402,11 +401,12 @@ tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.stra
         dplyr::mutate(thickStart=start, thickEnd=end, score=1, rgb=dplyr::case_when(tlx_strand=="+"~"255,0,0", tlx_strand=="-"~"0,0,255", T~"0,0,0")) %>%
         dplyr::select(Rname, start, end, name, score, tlx_strand, thickStart, thickEnd, rgb)
       z.path = paste0(path, "XXXXXXXXXXXX")
+      if(!dir.exists(dirname(z.path))) dir.create(dirname(z.path), recursive=T)
       z.path = file.path(dirname(z.path), paste0(basename(z.path), ifelse(basename(z.path)=="XXXXXXXXXXXX", "", "-"), z$g[1], ".bed"))
       z.path = gsub("XXXXXXXXXXXX", "", z.path)
       writeLines(paste0("Writing to file '", z.path, "'"))
       # writeLines('track itemRgb=On visibility=2 colorByStrand="255,0,0 0,0,255"', con=z.path)
-      readr::write_tsv(z.out, file=z.path, col_names=F, append=T)
+      readr::write_tsv(z.out, file=z.path, col_names=F, append=F)
       data.frame()
     })(.))
 
