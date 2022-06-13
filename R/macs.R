@@ -57,7 +57,7 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
     dplyr::mutate(sample_baseline=tidyr::replace_na(sample_baseline, 0), sample_baseline=pmax(sample_baseline, params$baseline))
   writeLines(paste0("Detected baseline is \n", paste(paste0("    ", baseline_df$sample_chrom, "=", format(round(baseline_df$sample_baseline, 5), nsmall=5)), collapse="\n")))
 
-  if(!is.na(params$minqvalue) + !is.na(params$minqvalue) != 1) {
+  if(0 + !is.na(params$minqvalue) + !is.na(params$minpvalue) != 1) {
     stop("Please provide either minimal q-value or p-value")
   }
 

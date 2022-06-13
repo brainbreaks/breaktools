@@ -205,7 +205,6 @@ tlxcov_write_bedgraph = function(tlxcov_df, path, group) {
 
   writeLines("calculating filenames(s)...")
   path = paste0(path, "XXXXXXXXXXXX")
-  print(basename(path))
   if(group=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=gsub("XXXXXXXXXXXX", "", paste0(dirname(path), "/", basename(path), ifelse(basename(path)=="XXXXXXXXXXXX", "", "-"), tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph")))
   if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=gsub("XXXXXXXXXXXX", "", paste0(dirname(path), "/", basename(path), ifelse(basename(path)=="XXXXXXXXXXXX", "", "-"), tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph")))
   if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=gsub("XXXXXXXXXXXX", "", paste0(dirname(path), "/", basename(path), ifelse(basename(path)=="XXXXXXXXXXXX", "", "-"), tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=!ignore.strand), ".bedgraph")))
@@ -442,7 +441,7 @@ tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.stra
 #' tlx_df = tlx_read_many(samples_df, threads=30)
 #' tlx_libfactors = tlx_libfactors(tlx_all_df, normalize_within="treatment", normalize_between="treatment")
 #' tlxcov_df = tlx_coverage(tlx_df, group="treatment", extsize=20e3, exttype="symmertrical", libfactors_df=tlx_libfactors, ignore.strand=T)
-tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ignore.strand=T) {
+tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ignore.strand=T, min_sample_pileup=0) {
   validate_group(group)
   validate_exttype(exttype)
 
@@ -453,7 +452,7 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ign
   }
 
   if(!all(tlx_df$tlx_sample %in% libfactors_df$tlx_sample)) {
-    stop(paste0("Samples are missing from libfactors_df data.frame: ", paste(setdiff(tlx_df$tlx_sample, libfactors_df$tlx_sample), collapsse=", ")))
+    stop(paste0("Samples are missing from libfactors_df data.frame: ", paste(setdiff(tlx_df$tlx_sample, libfactors_df$tlx_sample), collapse=", ")))
   }
 
   tlx_coverage_ = function(x, extsize, exttype) {
@@ -483,10 +482,13 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ign
 
   # Calculate coverage for each sample
   writeLines("Calculating each sample coverage...")
+  tlxcov_cols = c("tlx_group", "tlx_group_i", "tlx_sample", "tlx_control", "tlx_path", "tlx_strand")
   tlxcov_df = tlx_df %>%
-    dplyr::group_by(tlx_group, tlx_group_i, tlx_sample, tlx_control, tlx_path, tlx_strand) %>%
+    dplyr::group_by_at(tlxcov_cols) %>%
     dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>%
-    dplyr::ungroup()
+    dplyr::ungroup() %>%
+    dplyr::mutate(tlxcov_pileup=ifelse(tlxcov_pileup<min_sample_pileup, 0, tlxcov_pileup))
+
   tlxcov_df = tlxcov_df %>%
     dplyr::left_join(libfactors_df %>% dplyr::select(tlx_sample, library_factor), by="tlx_sample") %>%
     dplyr::mutate(tlxcov_pileup.norm=tlxcov_pileup*library_factor)
@@ -953,6 +955,15 @@ tlxcov_macs2 = function(tlxcov_df, group, params) {
 
       group_desc = paste0(group_cols, rep("=", length(group_cols)), sapply(distinct(z[,group_cols]), as.character), collapse=",")
       writeLines(paste0("Running MACS for group {", group_desc, "}"))
+      if(length(sample_ranges)==0) {
+        stop("Sample data not found!")
+      } else {
+        writeLines(paste0("Finding islands with ", length(sample_ranges), " sample value points and ", length(control_ranges), " control value points..."))
+        if(length(control_ranges)==0) {
+          writeLines("Calculating baseline from sample data")
+        }
+      }
+
       results = macs2_coverage(sample_ranges=sample_ranges, control_ranges=control_ranges, params=params)
       results_df = dplyr::bind_cols(z[1,group_cols], dplyr::bind_rows(results[["islands"]], results[["qvalues"]])) %>%
         dplyr::relocate(dplyr::matches("qvalue_|island_"), .after=tidyselect::last_col())
