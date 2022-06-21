@@ -49,12 +49,26 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
 
   baseline_df = sample_df %>%
     dplyr::mutate(sample_chrom=droplevels(sample_chrom)) %>%
+    df2ranges(sample_chrom, sample_start, sample_end) %>%
+    ranges_tile(column="sample_score", width=params$extsize, ceiling(params$extsize/4)) %>%
+    as.data.frame() %>%
+    dplyr::rename(sample_chrom="seqnames", sample_start="start", sample_end="end") %>%
+    dplyr::select(dplyr::matches("^sample_")) %>%
     dplyr::filter(sample_end-sample_start>0 & sample_score>1e-6) %>%
     dplyr::group_by(sample_chrom, .drop=F) %>%
     dplyr::mutate(sample_density=sample_score/(sample_end-sample_start)) %>%
     dplyr::filter(quantile(sample_density, 0.05)<=sample_density & sample_density<=median(sample_density, na.rm=T)*2) %>%
     dplyr::summarise(sample_baseline=sum(sample_score*(sample_end-sample_start))/sum(sample_end-sample_start)) %>%
     dplyr::mutate(sample_baseline=tidyr::replace_na(sample_baseline, 0), sample_baseline=pmax(sample_baseline, params$baseline))
+
+  # baseline_df = sample_df %>%
+  #   dplyr::mutate(sample_chrom=droplevels(sample_chrom)) %>%
+  #   dplyr::filter(sample_end-sample_start>0 & sample_score>1e-6) %>%
+  #   dplyr::group_by(sample_chrom, .drop=F) %>%
+  #   dplyr::mutate(sample_density=sample_score/(sample_end-sample_start)) %>%
+  #   dplyr::filter(quantile(sample_density, 0.05)<=sample_density & sample_density<=median(sample_density, na.rm=T)*2) %>%
+  #   dplyr::summarise(sample_baseline=sum(sample_score*(sample_end-sample_start))/sum(sample_end-sample_start)) %>%
+  #   dplyr::mutate(sample_baseline=tidyr::replace_na(sample_baseline, 0), sample_baseline=pmax(sample_baseline, params$baseline))
   writeLines(paste0("Detected baseline is \n", paste(paste0("    ", baseline_df$sample_chrom, "=", format(round(baseline_df$sample_baseline, 5), nsmall=5)), collapse="\n")))
 
   if(0 + !is.na(params$minqvalue) + !is.na(params$minpvalue) != 1) {
@@ -90,10 +104,12 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
       dplyr::rowwise() %>%
       dplyr::mutate(pvalue=pgamma(sample_score, shape=control_score, rate=1, lower.tail=F)) %>%
       dplyr::ungroup() %>%
-      dplyr::mutate(qvalue_pvalue=pvalue) %>%
-      dplyr::mutate(qvalue_pvalue=ifelse(qvalue_pvalue==0, 315, -log10(qvalue_pvalue))) %>%
+      dplyr::mutate(qvalue_pvalue=pmin(pmax(pvalue, 0), 1)) %>%
+      dplyr::mutate(qvalue_pvalue=ifelse(qvalue_pvalue<=0, 315, -log10(qvalue_pvalue))) %>%
+      dplyr::group_by(seqnames) %>%
       dplyr::mutate(qvalue_qvalue=qvalue::qvalue(pvalue)$qvalues) %>%
-      dplyr::mutate(qvalue_qvalue=ifelse(qvalue_qvalue==0, 315, -log10(qvalue_qvalue))) %>%
+      dplyr::mutate(qvalue_qvalue=ifelse(qvalue_qvalue<=0, 315, -log10(qvalue_qvalue))) %>%
+      dplyr::ungroup() %>%
       # dplyr::mutate(qvalue_score=qvalue::qvalue(pvalue)$qvalues) %>%
       # dplyr::mutate(qvalue_score=ifelse(qvalue_score==0, 315, -log10(qvalue_score))) %>% # TODO: change 315 to something better
       # dplyr::mutate(qvalue_score=tidyr::replace_na(qvalue_score, 0)) %>%

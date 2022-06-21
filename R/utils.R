@@ -155,6 +155,20 @@ innerJoinByOverlaps = function(query_ranges, subject_ranges, ...) {
   as.data.frame(result_ranges) %>% dplyr::select(-dplyr::matches("_ranges\\."))
 }
 
+#' @export
+innerJoinManyByOverlaps = function(ranges_list) {
+  results_ranges = ranges_list[[1]]
+  for(r_ranges in ranges_list[2:length(ranges_list)]) {
+    results_ranges = IRanges::mergeByOverlaps(results_ranges, r_ranges)
+    results_df = as.data.frame(results_ranges)
+    results_ranges = df2ranges(results_df, results_ranges.seqnames, results_ranges.start, results_ranges.end, results_ranges.strand)
+    results_cols = colnames(results_df)[!grepl("_ranges\\.", colnames(results_df))]
+    results_ranges = results_ranges[,results_cols]
+  }
+
+  as.data.frame(results_ranges)
+}
+
 #' @title df2ranges
 #' @export
 #' @description Convert data.frame-like object to GRanges
@@ -255,6 +269,26 @@ get_seq = function(fasta, ranges) {
   ranges$sequence = res$sequence[match(1:nrow(bed_df), bed_df.order)]
 
   ranges
+}
+
+#' @title get_pairwise_alignment
+#' @export
+#' @description Find pairwise identity between two sets of sequences
+#'
+#' @param seq1 First set of sequences (pattern)
+#' @param seq2 Second set of sequences (subject)
+#'
+#' @return Vector with identity scores between 1 and 100
+get_pairwise_alignment = function(seq1, seq2, gapOpening=10, gapExtension=4) {
+  y1 = Biostrings::pairwiseAlignment(seq1, seq2, type="global-local", gapOpening=gapOpening, gapExtension=gapExtension)
+  y2 = Biostrings::pairwiseAlignment(Biostrings::reverseComplement(Biostrings::DNAStringSet(seq1)), seq2, type="global-local", gapOpening=gapOpening, gapExtension=gapExtension)
+
+  y1_df = cbind(data.frame(score=Biostrings::score(y1), pid=Biostrings::pid(y2)), as.data.frame(ranges(Biostrings::subject(y1))))
+  y2_df = cbind(data.frame(score=Biostrings::score(y2), pid=Biostrings::pid(y2)), as.data.frame(ranges(Biostrings::subject(y2))))
+  ret_df = y1_df
+  ret_df[y2_df$score>y1_df$score,] = y2_df[y2_df$score>y1_df$score,]
+
+  ret_df %>% dplyr::select(-width)
 }
 
 #' @title get_blat
@@ -449,4 +483,12 @@ file_count_lines = function(path) {
 #'
 trim = function(value, lb, ub) {
   pmin(pmax(value, lb), ub)
+}
+
+ranges_tile = function(ranges, column, width=1000, step=width) {
+  df_score = GenomicRanges::coverage(ranges, weight=GenomicRanges::mcols(ranges)[[column]])
+  df_bins = ranges %>%
+    GenomicRanges::slidingWindows(width=width, step=step) %>%
+    unlist()
+  GenomicRanges::binnedAverage(df_bins, df_score, column)
 }

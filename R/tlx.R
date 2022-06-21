@@ -134,7 +134,7 @@ tlx_read = function(path, sample, group="", group_i=1, control=F) {
   tlx_single_df = readr::read_tsv(path, comment="#", skip=1, col_names=names(tlx_cols()$cols), col_types=tlx_cols()) %>%
     dplyr::mutate(tlx_strand=as.character(ifelse(Strand<0, "-", "+"))) %>%
     dplyr::mutate(Seq_length=as.numeric(nchar(Seq)), tlx_sample=as.character(sample), tlx_path=as.character(path), tlx_group=as.character(group), tlx_group_i=as.numeric(group_i), tlx_control=as.logical(control)) %>%
-    dplyr::mutate(tlx_duplicated=duplicated(paste0(Rname, B_Rstart, B_Rend, ifelse(tlx_strand=="+", Rstart, Rend)))) %>%
+    dplyr::mutate(tlx_duplicated=duplicated(paste0(Rname, B_Rstart, B_Rend, ifelse(tlx_strand=="+", Rstart, Rend))) | duplicated(Seq)) %>%
     dplyr::mutate(QSeq=substr(Seq, Qstart, Qend))
 }
 
@@ -947,6 +947,7 @@ tlxcov_macs2 = function(tlxcov_df, group, params) {
     dplyr::group_by_at(group_cols) %>%
     dplyr::do((function(z){
       zz<<-z
+      # z = tlxcov_df %>% dplyr::filter(tlx_group=="Inter")
       # z = tlxcov_df %>% dplyr::filter(tlxcov_chrom=="chr3")
       # z = tlxcov_df %>% dplyr::filter(tlxcov_chrom=="chr5")
       tlxcov_ranges = z %>% dplyr::mutate(score=tlxcov_pileup) %>% df2ranges(tlxcov_chrom, tlxcov_start, tlxcov_end)
