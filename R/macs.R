@@ -36,151 +36,162 @@ macs2 = function(name, sample, effective_size, control=NULL, maxgap=NULL, qvalue
     dplyr::select(-dplyr::matches("macs_comment"))
 }
 
-macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix=NULL)
+macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix=NULL, plot=F)
 {
   if(is.null(tmp_prefix)) {
     tmp_prefix = file.path("tmp", basename(tempfile()))
   }
+
+  cutoff = ifelse(!is.na(params$minqvalue), params$minqvalue, params$minpvalue)
 
   sample_path = paste0(tmp_prefix, "-sample.bdg")
   sample_df = as.data.frame(sample_ranges) %>% dplyr::mutate(sample_chrom=seqnames, sample_start=start, sample_end=end, sample_score=score)
   sample_ranges = sample_df %>% GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns=T)
   readr::write_tsv(sample_df %>% dplyr::select(sample_chrom, sample_start, sample_end, sample_score), file=sample_path, col_names=F)
 
-  baseline_df = sample_df %>%
+  bgmodel_data_df = suppressWarnings(sample_df %>%
     dplyr::mutate(sample_chrom=droplevels(sample_chrom)) %>%
     df2ranges(sample_chrom, sample_start, sample_end) %>%
-    ranges_tile(column="sample_score", width=params$extsize, ceiling(params$extsize/4)) %>%
+    ranges2pure_tiles(column="sample_score", width=200, step=200, diff=0.1) %>%
     as.data.frame() %>%
+    dplyr::filter(sample_score>0) %>%
     dplyr::rename(sample_chrom="seqnames", sample_start="start", sample_end="end") %>%
-    dplyr::select(dplyr::matches("^sample_")) %>%
-    dplyr::filter(sample_end-sample_start>0 & sample_score>1e-6) %>%
+    dplyr::select(dplyr::matches("^sample_")))
+  bgmodel_df = suppressWarnings(bgmodel_data_df %>%
     dplyr::group_by(sample_chrom, .drop=F) %>%
-    dplyr::mutate(sample_density=sample_score/(sample_end-sample_start)) %>%
-    dplyr::filter(quantile(sample_density, 0.05)<=sample_density & sample_density<=median(sample_density, na.rm=T)*2) %>%
-    dplyr::summarise(sample_baseline=sum(sample_score*(sample_end-sample_start))/sum(sample_end-sample_start)) %>%
-    dplyr::mutate(sample_baseline=tidyr::replace_na(sample_baseline, 0), sample_baseline=pmax(sample_baseline, params$baseline))
+    dplyr::do((function(z) {
+      yy<<-z
 
-  # baseline_df = sample_df %>%
-  #   dplyr::mutate(sample_chrom=droplevels(sample_chrom)) %>%
-  #   dplyr::filter(sample_end-sample_start>0 & sample_score>1e-6) %>%
-  #   dplyr::group_by(sample_chrom, .drop=F) %>%
-  #   dplyr::mutate(sample_density=sample_score/(sample_end-sample_start)) %>%
-  #   dplyr::filter(quantile(sample_density, 0.05)<=sample_density & sample_density<=median(sample_density, na.rm=T)*2) %>%
-  #   dplyr::summarise(sample_baseline=sum(sample_score*(sample_end-sample_start))/sum(sample_end-sample_start)) %>%
-  #   dplyr::mutate(sample_baseline=tidyr::replace_na(sample_baseline, 0), sample_baseline=pmax(sample_baseline, params$baseline))
-  writeLines(paste0("Detected baseline is \n", paste(paste0("    ", baseline_df$sample_chrom, "=", format(round(baseline_df$sample_baseline, 5), nsmall=5)), collapse="\n")))
+      fit_gamma = MASS::fitdistr(z$sample_score, densfun="gamma")
+      cbind(z[1,"sample_chrom", drop=F], as.data.frame(t(fit_gamma$estimate)) %>% setNames(paste0("bgmodel_", colnames(.))))
+    })(.)) %>%
+    dplyr::ungroup())
+
+  if(plot==T) {
+    bgmodel_rand_df = bgmodel_df %>%
+      dplyr::group_by(sample_chrom) %>%
+      dplyr::summarize(sample_score=rgamma(10000, rate=bgmodel_rate, shape=bgmodel_shape))
+    bgmodel_cutoff_df = bgmodel_df %>%
+      dplyr::group_by(sample_chrom) %>%
+      dplyr::summarize(cutoff=qgamma(cutoff, rate=bgmodel_rate, shape=bgmodel_shape, lower.tail=F))
+    ggplot() +
+      geom_density(aes(sample_score), bw=4, data=bgmodel_data_df %>% sample_n(100000)) +
+      geom_density(aes(sample_score, color="fit"), data=bgmodel_rand_df) +
+      geom_vline(aes(xintercept=cutoff), data=bgmodel_cutoff_df) +
+      facet_wrap(~sample_chrom, scales="free")
+  }
+
+  writeLines("Detected bgmodel is \n==============================================\n")
+  writeLines(knitr::kable(bgmodel_df %>% dplyr::mutate(dplyr::across(dplyr::matches("bgmodel_"), round, 4))))
 
   if(0 + !is.na(params$minqvalue) + !is.na(params$minpvalue) != 1) {
     stop("Please provide either minimal q-value or p-value")
   }
 
   control_path = paste0(tmp_prefix, "-control.bdg")
-  if(is.null(control_ranges) | length(control_ranges)==0) {
-    control_ranges = sample_df %>%
-      dplyr::left_join(baseline_df, by="sample_chrom") %>%
-      dplyr::mutate(score=tidyr::replace_na(sample_baseline, 0), control_score=score) %>%
-      dplyr::select(control_chrom=sample_chrom, control_start=sample_start, control_end=sample_end, score, control_score) %>%
-      df2ranges(control_chrom, control_start, control_end)
-  }
-  control_df = as.data.frame(control_ranges) %>%
-    dplyr::mutate(score=score) %>%
-    dplyr::select(seqnames, start, end, score)
-  readr::write_tsv(control_df, file=control_path, col_names=F)
-
   qvalue_path = gsub(".bdg$", "_qvalue.bdg", sample_path)
   peaks_path = gsub(".bdg$", ".peaks", sample_path)
   bedpeaks_path = gsub(".bdg$", "_peaks.bed", sample_path)
 
+  if(is.null(control_ranges) | length(control_ranges)==0) {
+    control_df = sample_df %>%
+      dplyr::left_join(bgmodel_df, by="sample_chrom") %>%
+      # dplyr::mutate(score=tidyr::replace_na(sample_bgmodel, 0), control_score=score) %>%
+      dplyr::select(control_chrom=sample_chrom, control_start=sample_start, control_end=sample_end, dplyr::matches("bgmodel_"))
+    control_ranges = control_df %>% df2ranges(control_chrom, control_start, control_end)
+  }
+  # control_df = as.data.frame(control_ranges) %>% dplyr::select(seqnames, start, end, score)
+  # readr::write_tsv(control_df, file=control_path, col_names=F)
+
   if(F) {
-    cmd_bdgcmp = stringr::str_glue("macs3 bdgcmp -t {sample} -c {control} -m qpois -o {output} -p 0.00000000000000001",
-       sample=sample_path, control=control_path, output=qvalue_path)
-    writeLines(cmd_bdgcmp)
-    system(cmd_bdgcmp)
+    # control_df = as.data.frame(control_ranges) %>% dplyr::select(seqnames, start, end, score)
+    # readr::write_tsv(control_df, file=control_path, col_names=F)
+    # This doesn't work anymore !!!! (because bgmodel is not always a poisson with just one argument
+    # cmd_bdgcmp = stringr::str_glue("macs3 bdgcmp -t {sample} -c {control} -m qpois -o {output} -p 0.00000000000000001",
+    #    sample=sample_path, control=control_path, output=qvalue_path)
+    # writeLines(cmd_bdgcmp)
+    # system(cmd_bdgcmp)
   } else {
-    qvalues_df = control_df %>%
-      dplyr::select(seqnames, start, end, control_score=score) %>%
-      dplyr::inner_join(sample_df, by=c("seqnames", "start", "end")) %>%
-      dplyr::rowwise() %>%
-      dplyr::mutate(pvalue=pgamma(sample_score, shape=control_score, rate=1, lower.tail=F)) %>%
+    sample_df %>%
+      dplyr::select(sample_chrom, sample_start, sample_end, sample_score) %>%
+      readr::write_tsv("sample.bedgraph", col_names = F)
+    qvalues_df = sample_df %>%
+      dplyr::inner_join(control_df, by=c("sample_chrom"="control_chrom", "sample_start"="control_start", "sample_end"="control_end")) %>%
+      dplyr::group_by(bgmodel_shape, bgmodel_rate) %>%
+      dplyr::mutate(pvalue=pgamma(sample_score, shape=bgmodel_shape, rate=bgmodel_rate, lower.tail=F), bgmodel_signal=qgamma(cutoff,  bgmodel_shape, bgmodel_rate, lower.tail=F)) %>%
       dplyr::ungroup() %>%
       dplyr::mutate(qvalue_pvalue=pmin(pmax(pvalue, 0), 1)) %>%
       dplyr::mutate(qvalue_pvalue=ifelse(qvalue_pvalue<=0, 315, -log10(qvalue_pvalue))) %>%
-      dplyr::group_by(seqnames) %>%
-      dplyr::mutate(qvalue_qvalue=qvalue::qvalue(pvalue)$qvalues) %>%
-      dplyr::mutate(qvalue_qvalue=ifelse(qvalue_qvalue<=0, 315, -log10(qvalue_qvalue))) %>%
+      dplyr::mutate(qvalue=qvalue::qvalue(pvalue)$qvalues) %>%
+      dplyr::mutate(qvalue_qvalue=ifelse(qvalue<=0, 315, -log10(qvalue))) %>%
       dplyr::ungroup() %>%
-      # dplyr::mutate(qvalue_score=qvalue::qvalue(pvalue)$qvalues) %>%
-      # dplyr::mutate(qvalue_score=ifelse(qvalue_score==0, 315, -log10(qvalue_score))) %>% # TODO: change 315 to something better
-      # dplyr::mutate(qvalue_score=tidyr::replace_na(qvalue_score, 0)) %>%
-      # dplyr::mutate(pvalue_score=ifelse(pvalue==0, 315, -log10(pvalue))) %>%
-      # dplyr::mutate(qvalue_score=0) %>%
-      dplyr::select(qvalue_chrom=seqnames, qvalue_start=start, qvalue_end=end, qvalue_qvalue, qvalue_pvalue)
+      dplyr::select(qvalue_chrom=seqnames, qvalue_start=start, qvalue_end=end, qvalue_qvalue, qvalue_pvalue, dplyr::starts_with("bgmodel_")) %>%
+      dplyr::mutate(qvalue_score=dplyr::case_when(!is.na(params$minqvalue)~qvalue_qvalue, T~qvalue_pvalue))
+
     qvalues_df %>%
-      dplyr::mutate(score=dplyr::case_when(!is.na(params$minqvalue)~qvalue_qvalue, T~qvalue_pvalue)) %>%
-      dplyr::select(qvalue_chrom, qvalue_start, qvalue_end, score) %>%
+      dplyr::select(qvalue_chrom, qvalue_start, qvalue_end, qvalue_score) %>%
       readr::write_tsv(file=qvalue_path, col_names=F)
   }
-  # qvalues_df = readr::read_tsv(qvalue_path, col_names=names(qvalue_cols$cols), col_types=qvalue_cols)
-  # table(qvalues_df$qvalue_score)
-  # x = qvalues_df %>%
-  #   df2ranges(qvalue_chrom, qvalue_start, qvalue_end) %>%
-  #   innerJoinByOverlaps(sample_ranges)
-  # plot(x$qvalue_score, x$sample_score)
 
-  cutoff = ifelse(!is.na(params$minqvalue), params$minqvalue, params$minpvalue)
   cmd_bdgpeakcall = stringr::str_glue("macs3 bdgpeakcall -i {qvalue} -c {cutoff} --min-length {format(minlen, scientific=F)} --max-gap {format(maxgap, scientific=F)} -o {output}",
      qvalue=qvalue_path, output=peaks_path, cutoff=-log10(cutoff), maxgap=params$maxgap, minlen=params$minlen)
   writeLines(cmd_bdgpeakcall)
   system(cmd_bdgpeakcall)
 
-  qvalue_cols = cols(qvalue_chrom=col_character(), qvalue_start=col_double(), qvalue_end=col_double(), qvalue_score=col_double())
-  qvalues_df = readr::read_tsv(qvalue_path, col_names=names(qvalue_cols$cols), col_types=qvalue_cols)
+  # qvalue_cols = cols(qvalue_chrom=col_character(), qvalue_start=col_double(), qvalue_end=col_double(), qvalue_score=col_double())
+  # qvalues_df = readr::read_tsv(qvalue_path, col_names=names(qvalue_cols$cols), col_types=qvalue_cols)
 
   peaks_cols = cols(
     island_chrom=col_character(), island_start=col_double(), island_end=col_double(), island_peak=col_character(), island_summit_abs=col_double(),
     island_score=col_character(), island_fc=col_double(), island_pvalue_log10=col_double(), island_qvalue_log10=col_double(), island_sammit_offset=col_double()
   )
   islands_df = readr::read_tsv(peaks_path, skip=1, col_names=names(peaks_cols$cols), col_types=peaks_cols) %>%
-    dplyr::mutate(island_length=island_end-island_start, island_summit_pos=island_start + island_sammit_offset)
+    dplyr::mutate(island_length=island_end-island_start, island_summit_pos=island_start + island_sammit_offset) %>%
+    dplyr::select(island_chrom, island_start, island_end, island_summit_abs, island_sammit_offset, island_length, island_summit_pos)
 
   if(nrow(islands_df)>0) {
-    islands_df$island_name = paste0("MACS3_", stringr::str_pad(1:nrow(islands_df), 3, pad="0"))
+    islands_df$island_name = paste0("RDC_", stringr::str_pad(1:nrow(islands_df), 3, pad="0"))
     qvalues_ranges = qvalues_df %>% df2ranges(qvalue_chrom, qvalue_start, qvalue_end)
-    summit_ranges = islands_df %>% df2ranges(island_chrom, island_summit_pos, island_summit_pos)
-    summit2qvalue_df = as.data.frame(IRanges::mergeByOverlaps(qvalues_ranges, summit_ranges)) %>%
-      dplyr::group_by(island_name) %>%
-      dplyr::summarise(island_summit_qvalue=max(qvalue_score), .groups="keep")
-    summit2sample_df = as.data.frame(IRanges::mergeByOverlaps(sample_ranges, summit_ranges)) %>%
-      dplyr::group_by(island_name) %>%
-      dplyr::summarise(island_summit_abs=max(score), .groups="keep")
-
-    islands_df = islands_df %>%
-      dplyr::select(-dplyr::matches("island_summit_abs|island_summit_qvalue")) %>%
-      dplyr::inner_join(summit2qvalue_df, by="island_name") %>%
-      dplyr::inner_join(summit2sample_df, by="island_name")
-
-    sample_ranges1 = as.data.frame(sample_ranges) %>%
-      dplyr::select(sample_chrom=seqnames, sample_start=start, sample_end=end, sample_score=score) %>%
-      df2ranges(sample_chrom, sample_start, sample_end)
-    control_ranges1 = as.data.frame(control_ranges) %>%
-      dplyr::select(control_chrom=seqnames, control_start=start, control_end=end, control_score=score) %>%
-      df2ranges(control_chrom, control_start, control_end)
-    baseline_ranges = innerJoinByOverlaps(sample_ranges1, control_ranges1) %>%
-      dplyr::filter(sample_score>=control_score) %>%
-      df2ranges(sample_chrom, sample_start, sample_end) %>%
-      GenomicRanges::reduce() %>%
-      as.data.frame() %>%
-      dplyr::select(island_extended_chrom=seqnames, island_extended_start=start, island_extended_end=end) %>%
-      df2ranges(island_extended_chrom, island_extended_start, island_extended_end)
-    islands_df = islands_df %>%
+    islands_results_df = islands_df %>%
       df2ranges(island_chrom, island_start, island_end) %>%
-      leftJoinByOverlaps(baseline_ranges) %>%
-      dplyr::group_by(island_chrom, island_start, island_end) %>%
-      dplyr::mutate(island_extended_start=min(island_extended_start), island_extended_end=max(island_extended_end)) %>%
-      dplyr::slice(1) %>%
-      dplyr::select(-island_extended_chrom) %>%
-      dplyr::ungroup()
+      innerJoinByOverlaps(qvalues_ranges) %>%
+      dplyr::group_by_at(colnames(islands_df)) %>%
+      dplyr::mutate_at(dplyr::vars(dplyr::starts_with("bgmodel_")), mean) %>%
+      dplyr::mutate(island_qvalue=max(qvalue_qvalue), island_pvalue=max(qvalue_pvalue)) %>%
+      dplyr::ungroup() %>%
+      dplyr::distinct_at(colnames(islands_df), .keep_all=T) %>%
+      df2ranges(island_chrom, island_start, island_end) %>%
+      innerJoinByOverlaps(sample_ranges) %>%
+      dplyr::group_by_at(colnames(islands_df)) %>%
+      dplyr::mutate(island_sammit_pos=round(sample_start[which.max(sample_score)]/2+sample_end[which.max(sample_score)]/2), island_summit_abs=max(sample_score)) %>%
+      dplyr::ungroup() %>%
+      dplyr::distinct_at(colnames(islands_df), .keep_all=T) %>%
+      dplyr::select(island_name, dplyr::matches("^(island_|bgmodel_)"))
+
+    #
+    # Extended island coordinates
+    #
+    # sample_ranges1 = as.data.frame(sample_ranges) %>%
+    #   dplyr::select(sample_chrom=seqnames, sample_start=start, sample_end=end, sample_score=score) %>%
+    #   df2ranges(sample_chrom, sample_start, sample_end)
+    # control_ranges1 = as.data.frame(control_ranges) %>%
+    #   dplyr::select(control_chrom=seqnames, control_start=start, control_end=end, control_score=score) %>%
+    #   df2ranges(control_chrom, control_start, control_end)
+    # bgmodel_ranges = innerJoinByOverlaps(sample_ranges1, control_ranges1) %>%
+    #   dplyr::filter(sample_score>=control_score) %>%
+    #   df2ranges(sample_chrom, sample_start, sample_end) %>%
+    #   GenomicRanges::reduce() %>%
+    #   as.data.frame() %>%
+    #   dplyr::select(island_extended_chrom=seqnames, island_extended_start=start, island_extended_end=end) %>%
+    #   df2ranges(island_extended_chrom, island_extended_start, island_extended_end)
+    # islands_df = islands_df %>%
+    #   df2ranges(island_chrom, island_start, island_end) %>%
+    #   leftJoinByOverlaps(bgmodel_ranges) %>%
+    #   dplyr::group_by(island_chrom, island_start, island_end) %>%
+    #   dplyr::mutate(island_extended_start=min(island_extended_start), island_extended_end=max(island_extended_end)) %>%
+    #   dplyr::slice(1) %>%
+    #   dplyr::select(-island_extended_chrom) %>%
+    #   dplyr::ungroup()
   } else {
     islands_df$island_name = character()
     islands_df$island_summit_qvalue = double()
@@ -189,28 +200,6 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
     islands_df$island_extended_start = double()
     islands_df$island_extended_end = double()
   }
-
-  # Find coverage areas not overlapping with islands
-  notisland_sample_ranges = sample_ranges[!(IRanges::overlapsAny(sample_ranges, islands_df %>% df2ranges(island_chrom, island_start, island_end)))]
-
-  # Calculate baseline and signal-to-noise ratio for each island separately
-  island_llocal_ranges = islands_df %>%
-    df2ranges(island_chrom, island_start-params$llocal/2, island_end+params$llocal/2)
-  island2baseline_df = as.data.frame(IRanges::mergeByOverlaps(island_llocal_ranges, notisland_sample_ranges)) %>%
-    dplyr::select(-dplyr::matches("_ranges\\.")) %>%
-    dplyr::group_by(island_name) %>%
-    dplyr::mutate(island_density=sample_score/(sample_end-sample_start)) %>%
-    dplyr::filter(0.01>=island_density & island_density<=median(island_density, na.rm=T)*2) %>%
-    dplyr::summarise(island_baseline=sum(sample_score*(sample_end-sample_start))/sum(sample_end-sample_start))
-  islands_results_df = islands_df %>%
-    dplyr::inner_join(island2baseline_df, by="island_name") %>%
-    dplyr::mutate(island_snr=island_summit_abs/island_baseline) %>%
-    dplyr::select(island_name, island_chrom, island_start, island_end, island_extended_start, island_extended_end, island_length, island_summit_pos, island_summit_qvalue, island_summit_abs, island_baseline, island_snr)
-
-  islands_results_df %>%
-    dplyr::mutate(strand=".") %>%
-    dplyr::select(island_chrom, island_start, island_end, island_name, island_summit_qvalue, strand) %>%
-    readr::write_tsv(bedpeaks_path, col_names=F)
 
   list(qvalues=qvalues_df, islands=islands_results_df)
 }

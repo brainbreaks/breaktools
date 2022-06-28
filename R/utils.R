@@ -96,7 +96,7 @@ leftJoinByOverlaps = function(query_ranges, subject_ranges, ...) {
 
   query_ranges$query_id = 1:length(query_ranges)
   subject_ranges$subject_id = 1:length(subject_ranges)
-  result_df = as.data.frame(IRanges::mergeByOverlaps(query_ranges, subject_ranges, ...)) %>% dplyr::select(-dplyr::matches("^(query|subject)_ranges\\."))
+  result_df = as.data.frame(IRanges::mergeByOverlaps(query_ranges, subject_ranges)) %>% dplyr::select(-dplyr::matches("^(query|subject)_ranges\\."))
   result_df = dplyr::bind_rows(result_df, as.data.frame(GenomicRanges::mcols(query_ranges)) %>% dplyr::anti_join(result_df %>% dplyr::select(query_id), by="query_id"))
   result_df = result_df %>% dplyr::select(-dplyr::matches("^(query|subject)_ranges\\.")) %>% dplyr::select(-dplyr::matches("^query_id|subject_id$"))
 
@@ -403,7 +403,10 @@ get_bowtie = function(sequences, fasta, threads=30, tmp_dir="tmp") {
 #'
 #' @param tmp_dir Path to cache directory
 #' @param max_age Max age of files in seconds. Remove everything older than specified age
-clear_tmpdir = function(tmp_dir="tmp", max_age=10080) {
+clear_tmpdir = function(tmp_dir="tmp", max_age=604800) {
+  if(is.null(max_age)) {
+    max_age = 604800
+  }
   for(f in list.files(tmp_dir, recursive=T, full.names=T)) {
     ctime = file.info(f)$ctime
     cdiff = as.numeric(difftime(Sys.time(), ctime, units = "secs"))
@@ -485,10 +488,49 @@ trim = function(value, lb, ub) {
   pmin(pmax(value, lb), ub)
 }
 
-ranges_tile = function(ranges, column, width=1000, step=width) {
+ranges2tiles = function(ranges, column, width=1000, step=width) {
   df_score = GenomicRanges::coverage(ranges, weight=GenomicRanges::mcols(ranges)[[column]])
-  df_bins = ranges %>%
-    GenomicRanges::slidingWindows(width=width, step=step) %>%
-    unlist()
+
+  seqlengts = as.data.frame(ranges) %>%
+    dplyr::group_by(seqnames) %>%
+    dplyr::summarize(seqlengths=max(end)) %>%
+    tibble::deframe()
+  df_bins_template = GenomicRanges::tileGenome(seqlengts, tilewidth=width, cut.last.tile.in.chrom=T)
+  df_bins = df_bins_template
+  for(str in seq(0, width-1, by=step)[-1]) {
+    df_bins = IRanges::append(df_bins, GenomicRanges::trim(IRanges::shift(df_bins_template, str)))
+  }
+  df_bins = GenomicRanges::sort(df_bins)
   GenomicRanges::binnedAverage(df_bins, df_score, column)
+}
+
+ranges2pure_tiles = function(ranges, column, width=1000, step=width, diff=0.1) {
+  df_score = GenomicRanges::coverage(ranges, weight=GenomicRanges::mcols(ranges)[[column]])
+
+  seqlengts = as.data.frame(ranges) %>%
+    dplyr::group_by(seqnames) %>%
+    dplyr::summarize(seqlengths=max(end)) %>%
+    tibble::deframe()
+  df_bins_template = GenomicRanges::tileGenome(seqlengts, tilewidth=width, cut.last.tile.in.chrom=T)
+  df_bins = df_bins_template
+  for(str in seq(0, width-1, by=step)[-1]) {
+    df_bins = IRanges::append(df_bins, GenomicRanges::trim(IRanges::shift(df_bins_template, str)))
+  }
+  df_bins = GenomicRanges::sort(df_bins)
+  # GenomicRanges::binnedAverage(df_bins, df_score, column)
+
+  bins_per_chrom <- split(GenomicRanges::ranges(df_bins), GenomicRanges::seqnames(df_bins))
+  means_list <- lapply(names(df_score), function(seqname) {
+      ss <<- seqname
+      v = IRanges::Views(df_score[[seqname]], bins_per_chrom[[seqname]])
+      x = IRanges::viewMaxs(v) - IRanges::viewMeans(v) <= diff & is.finite(IRanges::viewMaxs(v))
+      m = data.frame(col=IRanges::viewMaxs(v))
+      colnames(m) = column
+
+      GenomicRanges::mcols(bins_per_chrom[[seqname]]) = m
+      GenomicRanges::GRanges(seqnames=seqname, bins_per_chrom[[seqname]][x])
+  })
+
+  ret = suppressWarnings(do.call(what = c, args = means_list))
+  ret
 }

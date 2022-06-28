@@ -434,6 +434,8 @@ tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.stra
 #'    \strong{none} - No extention is performed
 #' @param libfactors_df A data frame with \code{tlx_sample} and \code{library_factor} columns used for sample normalization
 #' @param ignore.strand Ignore strand information or calculate coverage for each strand individually
+#' @param min_sample_pileup
+#' @param recalculate_duplicate_samples
 #'
 #' @return A data frame with coverages for each sample or group
 #' @examples
@@ -441,7 +443,7 @@ tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.stra
 #' tlx_df = tlx_read_many(samples_df, threads=30)
 #' tlx_libfactors = tlx_libfactors(tlx_all_df, normalize_within="treatment", normalize_between="treatment")
 #' tlxcov_df = tlx_coverage(tlx_df, group="treatment", extsize=20e3, exttype="symmertrical", libfactors_df=tlx_libfactors, ignore.strand=T)
-tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ignore.strand=T, min_sample_pileup=0) {
+tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ignore.strand=T, min_sample_pileup=0, recalculate_duplicate_samples=T) {
   validate_group(group)
   validate_exttype(exttype)
 
@@ -483,11 +485,22 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ign
   # Calculate coverage for each sample
   writeLines("Calculating each sample coverage...")
   tlxcov_cols = c("tlx_group", "tlx_group_i", "tlx_sample", "tlx_control", "tlx_path", "tlx_strand")
-  tlxcov_df = tlx_df %>%
-    dplyr::group_by_at(tlxcov_cols) %>%
-    dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>%
-    dplyr::ungroup() %>%
-    dplyr::mutate(tlxcov_pileup=ifelse(tlxcov_pileup<min_sample_pileup, 0, tlxcov_pileup))
+  if(recalculate_duplicate_samples) {
+    tlxcov_df = tlx_df %>%
+      dplyr::group_by(tlx_sample) %>%
+      dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>%
+      dplyr::ungroup() %>%
+      dplyr::mutate(tlxcov_pileup=ifelse(tlxcov_pileup<min_sample_pileup, 0, tlxcov_pileup))
+    tlxcov_df = tlx_df %>%
+      dplyr::distinct_at(tlxcov_cols) %>%
+      dplyr::inner_join(tlxcov_df, by="tlx_sample")
+  } else {
+    tlxcov_df = tlx_df %>%
+      dplyr::group_by_at(tlxcov_cols) %>%
+      dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>%
+      dplyr::ungroup() %>%
+      dplyr::mutate(tlxcov_pileup=ifelse(tlxcov_pileup<min_sample_pileup, 0, tlxcov_pileup))
+  }
 
   tlxcov_df = tlxcov_df %>%
     dplyr::left_join(libfactors_df %>% dplyr::select(tlx_sample, library_factor), by="tlx_sample") %>%
@@ -549,7 +562,7 @@ tlx_mark_rand_chromosomes = function(tlx_df) {
 #' @param max_age Max age of files in seconds. Remove everything older than specified age
 #'
 #' @return Data frame with copy number in \code{tlx_copynumber} column
-tlx_calc_copynumber = function(tlx_df, bowtie2_index, max_hits=500, threads=8, tmp_dir="tmp", max_age=10080) {
+tlx_calc_copynumber = function(tlx_df, bowtie2_index, max_hits=500, threads=8, tmp_dir="tmp", max_age=NULL) {
   if(!bedr::check.binary("bowtie2")) {
     stop("dustmasker executible not found")
   }
@@ -589,7 +602,7 @@ tlx_calc_copynumber = function(tlx_df, bowtie2_index, max_hits=500, threads=8, t
   tlx_df %>%
     dplyr::select(-dplyr::matches("tlx_copynumber")) %>%
     dplyr::left_join(qseq_cumcount_df, by="QSeq") %>%
-    dplyr::mutate(tlx_copynumber=tidyr::replace_na(tlx_copynumber, 0))
+    dplyr::mutate(tlx_copynumber=pmax(1, tidyr::replace_na(tlx_copynumber, 0)))
 }
 
 
@@ -602,7 +615,7 @@ tlx_calc_copynumber = function(tlx_df, bowtie2_index, max_hits=500, threads=8, t
 #' @param max_age Max age of files in seconds. Remove everything older than specified age
 #'
 #' @return Data frame with dust marked using \code{tlx_has_dust} column
-tlx_mark_dust = function(tlx_df, tmp_dir="tmp", max_age=10080) {
+tlx_mark_dust = function(tlx_df, tmp_dir="tmp", max_age=NULL) {
   if(!bedr::check.binary("dustmasker")) {
     stop("dustmasker executible not found")
   }
@@ -947,7 +960,7 @@ tlxcov_macs2 = function(tlxcov_df, group, params) {
     dplyr::group_by_at(group_cols) %>%
     dplyr::do((function(z){
       zz<<-z
-      # z = tlxcov_df %>% dplyr::filter(tlx_group=="Inter")
+      # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Inter (Wei+DKFZ)")
       # z = tlxcov_df %>% dplyr::filter(tlxcov_chrom=="chr3")
       # z = tlxcov_df %>% dplyr::filter(tlxcov_chrom=="chr5")
       tlxcov_ranges = z %>% dplyr::mutate(score=tlxcov_pileup) %>% df2ranges(tlxcov_chrom, tlxcov_start, tlxcov_end)
@@ -961,9 +974,17 @@ tlxcov_macs2 = function(tlxcov_df, group, params) {
       } else {
         writeLines(paste0("Finding islands with ", length(sample_ranges), " sample value points and ", length(control_ranges), " control value points..."))
         if(length(control_ranges)==0) {
-          writeLines("Calculating baseline from sample data")
+          writeLines("Calculating background from sample data")
         }
       }
+
+    # control_df %>% dplyr::filter(seqnames=="chr6" & start>=77135833 & end<=77144153)
+    # sample_df %>% dplyr::filter(seqnames=="chr6" & start>=77135833 & end<=77144153)
+    # qvalues_df %>% dplyr::filter(qvalue_chrom=="chr6" & qvalue_start>=77135833 & qvalue_end<=77140579)
+    #   z %>% dplyr::filter(tlxcov_chrom=="chr6" & tlxcov_start>=77135833 & tlxcov_end<=77144153)
+    # x = tlxcov_df %>% dplyr::filter(tlxcov_chrom=="chr6" & tlxcov_start>=77135833 & tlxcov_end<=77144153)
+    # table(x$tlx_group)
+
 
       results = macs2_coverage(sample_ranges=sample_ranges, control_ranges=control_ranges, params=params)
       results_df = dplyr::bind_cols(z[1,group_cols], dplyr::bind_rows(results[["islands"]], results[["qvalues"]])) %>%
