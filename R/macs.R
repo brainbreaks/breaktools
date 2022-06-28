@@ -52,33 +52,40 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
   bgmodel_data_df = suppressWarnings(sample_df %>%
     dplyr::mutate(sample_chrom=droplevels(sample_chrom)) %>%
     df2ranges(sample_chrom, sample_start, sample_end) %>%
-    ranges2pure_tiles(column="sample_score", width=200, step=200, diff=0.1) %>%
+    ranges_sample(column="sample_score", ntile=300000) %>%
     as.data.frame() %>%
-    dplyr::filter(sample_score>0) %>%
+    dplyr::filter(sample_score>=0) %>%
     dplyr::rename(sample_chrom="seqnames", sample_start="start", sample_end="end") %>%
-    dplyr::select(dplyr::matches("^sample_")))
+    dplyr::select(dplyr::matches("^sample_")))%>%
+    dplyr::group_by(sample_chrom, .drop=F) %>%
+    dplyr::mutate(sample_score.q999=quantile(sample_score, 0.999), dataset="Observed data") %>%
+    dplyr::ungroup()
   bgmodel_df = suppressWarnings(bgmodel_data_df %>%
     dplyr::group_by(sample_chrom, .drop=F) %>%
     dplyr::do((function(z) {
       yy<<-z
 
-      fit_gamma = MASS::fitdistr(z$sample_score, densfun="gamma")
+      fixargs = NULL
+      fit_gamma = fitdistrplus::mgedist(z$sample_score, distr="gamma", fix.arg=fixargs)
+      fit_gamma$estimate = unlist(c(fit_gamma$estimate, fixargs[setdiff(names(fixargs), names(fit_gamma$estimate))]))
       cbind(z[1,"sample_chrom", drop=F], as.data.frame(t(fit_gamma$estimate)) %>% setNames(paste0("bgmodel_", colnames(.))))
     })(.)) %>%
     dplyr::ungroup())
 
   if(plot==T) {
     bgmodel_rand_df = bgmodel_df %>%
+      dplyr::inner_join(bgmodel_data_df %>% dplyr::distinct(sample_chrom, sample_score.q999), by="sample_chrom") %>%
       dplyr::group_by(sample_chrom) %>%
-      dplyr::summarize(sample_score=rgamma(10000, rate=bgmodel_rate, shape=bgmodel_shape))
+      dplyr::summarize(sample_score=0:round(sample_score.q999), sample_density=dgamma(sample_score, rate=bgmodel_rate, shape=bgmodel_shape), dataset="Fitted model")
     bgmodel_cutoff_df = bgmodel_df %>%
       dplyr::group_by(sample_chrom) %>%
-      dplyr::summarize(cutoff=qgamma(cutoff, rate=bgmodel_rate, shape=bgmodel_shape, lower.tail=F))
-    ggplot() +
-      geom_density(aes(sample_score), bw=4, data=bgmodel_data_df %>% sample_n(100000)) +
-      geom_density(aes(sample_score, color="fit"), data=bgmodel_rand_df) +
-      geom_vline(aes(xintercept=cutoff), data=bgmodel_cutoff_df) +
-      facet_wrap(~sample_chrom, scales="free")
+      dplyr::summarize(cutoff_score=qgamma(cutoff, rate=bgmodel_rate, shape=bgmodel_shape, lower.tail=F), dataset=paste0("Sign. cutoff (p<=", round(cutoff, 3), ")"))
+    ggplot(mapping=aes(x=sample_score, color=dataset)) +
+      geom_density(bw=4, data=bgmodel_data_df %>% dplyr::filter(sample_score<sample_score.q999) %>% sample_n(100000, replace=T)) +
+      geom_line(aes(y=sample_density), data=bgmodel_rand_df) +
+      geom_vline(aes(xintercept=cutoff_score, color=dataset), data=bgmodel_cutoff_df) +
+      facet_wrap(~sample_chrom, scales="free") +
+      labs(title=sample_df$tlx_group[1])
   }
 
   writeLines("Detected bgmodel is \n==============================================\n")
@@ -127,6 +134,12 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
       dplyr::ungroup() %>%
       dplyr::select(qvalue_chrom=seqnames, qvalue_start=start, qvalue_end=end, qvalue_qvalue, qvalue_pvalue, dplyr::starts_with("bgmodel_")) %>%
       dplyr::mutate(qvalue_score=dplyr::case_when(!is.na(params$minqvalue)~qvalue_qvalue, T~qvalue_pvalue))
+    if(F) {
+      ggplot(qvalues_df) +
+        geom_histogram(aes(x=10^-qvalue_pvalue)) +
+        facet_wrap(~qvalue_chrom, scales="free") +
+        labs(title=sample_df$tlx_group[1])
+    }
 
     qvalues_df %>%
       dplyr::select(qvalue_chrom, qvalue_start, qvalue_end, qvalue_score) %>%
@@ -193,12 +206,13 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
     #   dplyr::select(-island_extended_chrom) %>%
     #   dplyr::ungroup()
   } else {
-    islands_df$island_name = character()
-    islands_df$island_summit_qvalue = double()
-    islands_df$island_summit_abs = double()
-    islands_df$island_summit_pos = double()
-    islands_df$island_extended_start = double()
-    islands_df$island_extended_end = double()
+    islands_results_df = islands_df
+    islands_results_df$island_name = character()
+    islands_results_df$island_summit_qvalue = double()
+    islands_results_df$island_summit_abs = double()
+    islands_results_df$island_summit_pos = double()
+    islands_results_df$island_extended_start = double()
+    islands_results_df$island_extended_end = double()
   }
 
   list(qvalues=qvalues_df, islands=islands_results_df)

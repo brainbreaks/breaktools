@@ -485,21 +485,25 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ign
   # Calculate coverage for each sample
   writeLines("Calculating each sample coverage...")
   tlxcov_cols = c("tlx_group", "tlx_group_i", "tlx_sample", "tlx_control", "tlx_path", "tlx_strand")
+  if(ignore.strand) tlxcov_cols = setdiff(tlxcov_cols, "tlx_strand")
   if(recalculate_duplicate_samples) {
     tlxcov_df = tlx_df %>%
+      # dplyr::filter(Rname=="chr1" & Junction>=9970000 & Junction<=10030000 & tlx_sample%in% c("VI043")) %>%
+      dplyr::group_by_at(tlxcov_cols) %>%
+      dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>%
+      dplyr::ungroup() %>%
+      dplyr::mutate(tlxcov_pileup=ifelse(tlxcov_pileup<min_sample_pileup, 0, tlxcov_pileup))
+  } else {
+    tlxcov_sample_df = tlx_df %>%
+      dplyr::distinct(tlx_sample, Rname, Qname, .keep_all=T) %>%
       dplyr::group_by(tlx_sample) %>%
       dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>%
       dplyr::ungroup() %>%
       dplyr::mutate(tlxcov_pileup=ifelse(tlxcov_pileup<min_sample_pileup, 0, tlxcov_pileup))
     tlxcov_df = tlx_df %>%
-      dplyr::distinct_at(tlxcov_cols) %>%
-      dplyr::inner_join(tlxcov_df, by="tlx_sample")
-  } else {
-    tlxcov_df = tlx_df %>%
-      dplyr::group_by_at(tlxcov_cols) %>%
-      dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>%
-      dplyr::ungroup() %>%
-      dplyr::mutate(tlxcov_pileup=ifelse(tlxcov_pileup<min_sample_pileup, 0, tlxcov_pileup))
+      dplyr::rename(tlxcov_chrom="Rname") %>%
+      dplyr::distinct_at(c(tlxcov_cols, "tlxcov_chrom")) %>%
+      dplyr::inner_join(tlxcov_sample_df, by=c("tlx_sample", "tlxcov_chrom"))
   }
 
   tlxcov_df = tlxcov_df %>%
@@ -961,8 +965,7 @@ tlxcov_macs2 = function(tlxcov_df, group, params) {
     dplyr::do((function(z){
       zz<<-z
       # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Inter (Wei+DKFZ)")
-      # z = tlxcov_df %>% dplyr::filter(tlxcov_chrom=="chr3")
-      # z = tlxcov_df %>% dplyr::filter(tlxcov_chrom=="chr5")
+      # z = tlxcov_df %>% dplyr::filter(tlx_group=="DMSO-Intra (DKFZ)")
       tlxcov_ranges = z %>% dplyr::mutate(score=tlxcov_pileup) %>% df2ranges(tlxcov_chrom, tlxcov_start, tlxcov_end)
       sample_ranges = tlxcov_ranges[!tlxcov_ranges$tlx_control]
       control_ranges = tlxcov_ranges[tlxcov_ranges$tlx_control]

@@ -496,12 +496,21 @@ ranges2tiles = function(ranges, column, width=1000, step=width) {
     dplyr::summarize(seqlengths=max(end)) %>%
     tibble::deframe()
   df_bins_template = GenomicRanges::tileGenome(seqlengts, tilewidth=width, cut.last.tile.in.chrom=T)
-  df_bins = df_bins_template
-  for(str in seq(0, width-1, by=step)[-1]) {
-    df_bins = IRanges::append(df_bins, GenomicRanges::trim(IRanges::shift(df_bins_template, str)))
-  }
   df_bins = GenomicRanges::sort(df_bins)
   GenomicRanges::binnedAverage(df_bins, df_score, column)
+}
+
+ranges_sample = function(ranges, column, ntile=100000) {
+  df_score = GenomicRanges::coverage(ranges, weight=GenomicRanges::mcols(ranges)[[column]])
+
+  seqlengts = as.data.frame(ranges) %>%
+    dplyr::group_by(seqnames) %>%
+    dplyr::summarize(seqlengths=max(end)) %>%
+    tibble::deframe()
+  tile_ranges = unlist(GenomicRanges::tileGenome(seqlengts, ntile=ntile, cut.last.tile.in.chrom=F))
+  GenomicRanges::end(tile_ranges) = GenomicRanges::start(tile_ranges)
+
+  GenomicRanges::binnedAverage(tile_ranges, df_score, column)
 }
 
 ranges2pure_tiles = function(ranges, column, width=1000, step=width, diff=0.1) {
