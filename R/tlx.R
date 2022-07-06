@@ -956,7 +956,7 @@ geom_tlxcov = function(x, scale=1) {
 
 
 #' @export
-tlxcov_macs2 = function(tlxcov_df, group, params) {
+tlxcov_macs2 = function(tlxcov_df, group, params, debug_plots=F) {
   validate_group(group)
   group_cols = tlx_get_group_cols(group, ignore.strand=T, ignore.control=T)
 
@@ -964,8 +964,8 @@ tlxcov_macs2 = function(tlxcov_df, group, params) {
     dplyr::group_by_at(group_cols) %>%
     dplyr::do((function(z){
       zz<<-z
-      # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Inter (Wei+DKFZ)")
-      # z = tlxcov_df %>% dplyr::filter(tlx_group=="DMSO-Intra (DKFZ)")
+      # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Intra (Wei)")
+      # z = tlxcov_df %>% dplyr::filter(tlx_group=="DMSO-Inter (DKFZ)")
       tlxcov_ranges = z %>% dplyr::mutate(score=tlxcov_pileup) %>% df2ranges(tlxcov_chrom, tlxcov_start, tlxcov_end)
       sample_ranges = tlxcov_ranges[!tlxcov_ranges$tlx_control]
       control_ranges = tlxcov_ranges[tlxcov_ranges$tlx_control]
@@ -981,15 +981,7 @@ tlxcov_macs2 = function(tlxcov_df, group, params) {
         }
       }
 
-    # control_df %>% dplyr::filter(seqnames=="chr6" & start>=77135833 & end<=77144153)
-    # sample_df %>% dplyr::filter(seqnames=="chr6" & start>=77135833 & end<=77144153)
-    # qvalues_df %>% dplyr::filter(qvalue_chrom=="chr6" & qvalue_start>=77135833 & qvalue_end<=77140579)
-    #   z %>% dplyr::filter(tlxcov_chrom=="chr6" & tlxcov_start>=77135833 & tlxcov_end<=77144153)
-    # x = tlxcov_df %>% dplyr::filter(tlxcov_chrom=="chr6" & tlxcov_start>=77135833 & tlxcov_end<=77144153)
-    # table(x$tlx_group)
-
-
-      results = macs2_coverage(sample_ranges=sample_ranges, control_ranges=control_ranges, params=params)
+      results = macs2_coverage(sample_ranges=sample_ranges, control_ranges=control_ranges, params=params, debug_plots=debug_plots)
       results_df = dplyr::bind_cols(z[1,group_cols], dplyr::bind_rows(results[["islands"]], results[["qvalues"]])) %>%
         dplyr::relocate(dplyr::matches("qvalue_|island_"), .after=tidyselect::last_col())
       results_df

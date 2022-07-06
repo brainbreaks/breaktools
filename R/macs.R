@@ -36,7 +36,7 @@ macs2 = function(name, sample, effective_size, control=NULL, maxgap=NULL, qvalue
     dplyr::select(-dplyr::matches("macs_comment"))
 }
 
-macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix=NULL, plot=F)
+macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix=NULL, debug_plots=F)
 {
   if(is.null(tmp_prefix)) {
     tmp_prefix = file.path("tmp", basename(tempfile()))
@@ -49,43 +49,108 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
   sample_ranges = sample_df %>% GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns=T)
   readr::write_tsv(sample_df %>% dplyr::select(sample_chrom, sample_start, sample_end, sample_score), file=sample_path, col_names=F)
 
+  distr = "nbinom"
+  # distr = "gamma"
+  # distr = "weibull"
+  distr_lower.tail = F
+
+  # Find and remove regions of continous 0 (zero). These are probably the bait regions
+  mask_ranges = GenomicRanges::reduce(sample_ranges[sample_ranges$sample_score==0]) %>%
+    as.data.frame() %>%
+    dplyr::arrange(dplyr::desc(width)) %>%
+    dplyr::distinct(seqnames, .keep_all=T) %>%
+    dplyr::select(mask_chrom=seqnames, mask_start=start, mask_end=end) %>%
+    df2ranges(mask_chrom, mask_start, mask_end)
   bgmodel_data_df = suppressWarnings(sample_df %>%
     dplyr::mutate(sample_chrom=droplevels(sample_chrom)) %>%
     df2ranges(sample_chrom, sample_start, sample_end) %>%
-    ranges_sample(column="sample_score", ntile=300000) %>%
+    ranges_sample(column="sample_score", ntile=1000000) %>%
     as.data.frame() %>%
-    dplyr::filter(sample_score>=0) %>%
-    dplyr::rename(sample_chrom="seqnames", sample_start="start", sample_end="end") %>%
+    dplyr::select(sample_chrom=seqnames, sample_start=start, sample_end=end, sample_score) %>%
+    df2ranges(sample_chrom, sample_start, sample_end) %>%
+    leftJoinByOverlaps(mask_ranges) %>%
+    dplyr::filter(is.na(mask_start)) %>%
+    # dplyr::filter(sample_score>1e-6) %>%
     dplyr::select(dplyr::matches("^sample_")))%>%
     dplyr::group_by(sample_chrom, .drop=F) %>%
-    dplyr::mutate(sample_score.q999=quantile(sample_score, 0.999), dataset="Observed data") %>%
+    dplyr::mutate(sample_score.q999=quantile(sample_score[sample_score>0], 0.999), sample_score.q500=quantile(sample_score[sample_score>0], 0.5), dataset="Observed data") %>%
     dplyr::ungroup()
   bgmodel_df = suppressWarnings(bgmodel_data_df %>%
-    dplyr::group_by(sample_chrom, .drop=F) %>%
+    dplyr::filter(sample_chrom!="chrY") %>%
+    dplyr::group_by(sample_chrom) %>%
     dplyr::do((function(z) {
       yy<<-z
+      # z = bgmodel_data_df %>% dplyr::filter(sample_chrom=="chr8")
 
       fixargs = NULL
-      fit_gamma = fitdistrplus::mgedist(z$sample_score, distr="gamma", fix.arg=fixargs)
-      fit_gamma$estimate = unlist(c(fit_gamma$estimate, fixargs[setdiff(names(fixargs), names(fit_gamma$estimate))]))
+      probs = c(pmin(0.1, mean(z$sample_score==0)), pmax(1-mean(z$sample_score>=3), 0.9))
+      range = quantile(z$sample_score, probs)
+      # , lower=c(1.99, 0), start=list(mu=pmax(2, mean(z$sample_score.q500)), size=2)
+      fit_gamma = fitdistrplus::fitdist(z$sample_score, distr=distr, fix.arg=fixargs, method="qme", probs=probs)
+      # if(fit_gamma$estimate["mu"]<=2) {
+      #   fixargs = list(mu=2)
+      #   # fit_gamma = fitdistrplus::fitdist(z$sample_score, distr=distr, method="mle")
+      #   fit_gamma = fitdistrplus::fitdist(z$sample_score, distr=distr, fix.arg=fixargs, method="mle")
+      # }
+
+      ggplot2::ggplot(z, aes(x=sample_score, y=1)) +
+        stat_density_ridges(quantile_lines=T, calc_ecdf=T, geom="density_ridges_gradient", quantiles=probs, bandwidth=1, n = 10000) +
+        scale_x_continuous(limits = c(0, z$sample_score.q500*10))
+
+      fit_gamma$fix.arg
+
+      # fit_gamma = MASS::fitdistr(z$sample_score, densfun="gamma")
+      if(!is.null(fixargs) & length(fixargs)>0) {
+        fit_gamma$estimate = unlist(c(fit_gamma$estimate, fixargs[setdiff(names(fixargs), names(fit_gamma$estimate))]))
+      }
+
       cbind(z[1,"sample_chrom", drop=F], as.data.frame(t(fit_gamma$estimate)) %>% setNames(paste0("bgmodel_", colnames(.))))
     })(.)) %>%
     dplyr::ungroup())
 
-  if(plot==T) {
-    bgmodel_rand_df = bgmodel_df %>%
-      dplyr::inner_join(bgmodel_data_df %>% dplyr::distinct(sample_chrom, sample_score.q999), by="sample_chrom") %>%
+  distr_call = function(ver, distr, x, params, lower.tail=T) {
+    params_clean = params %>%
+      dplyr::select(dplyr::starts_with("bgmodel_")) %>%
+      dplyr::slice(1) %>%
+      setNames(gsub("bgmodel_", "", colnames(.))) %>%
+      as.list()
+    if(ver=="d") params_clean[["x"]] = x
+    if(ver=="r") params_clean[["n"]] = x
+    if(ver=="p") params_clean[["q"]] = x
+    if(ver=="q") params_clean[["p"]] = x
+    if(ver=="p" || ver=="q") params_clean[["lower.tail"]] = lower.tail
+
+    do.call(paste0(ver, distr), params_clean)
+  }
+
+  if(debug_plots==T) {
+    bgmodel_quant_df = bgmodel_df %>%
       dplyr::group_by(sample_chrom) %>%
-      dplyr::summarize(sample_score=0:round(sample_score.q999), sample_density=dgamma(sample_score, rate=bgmodel_rate, shape=bgmodel_shape), dataset="Fitted model")
+      dplyr::summarize(sample_quantile=seq(0, 1, length.out=500), sample_density=distr_call(ver="q", distr=distr, x=sample_quantile, params=dplyr::cur_data_all()))
+    bgmodel_data_quant_df = bgmodel_data_df %>%
+      dplyr::group_by(sample_chrom) %>%
+      dplyr::summarize(sample_quantile=seq(0, 1, length.out=500), sample_density=quantile(sample_score, sample_quantile))
+    bgmodel_qplot_df = bgmodel_quant_df %>%
+      dplyr::inner_join(bgmodel_data_quant_df, by=c("sample_chrom", "sample_quantile"))
+    print(ggplot2::ggplot(bgmodel_qplot_df) +
+      ggplot2::geom_point(ggplot2::aes(x=sample_density.x, y=sample_density.y), alpha=0.5, shape=1, size=2) +
+      ggplot2::facet_wrap(~sample_chrom, scales="free") +
+      ggplot2::geom_abline(intercept=0, slope=1) +
+      ggplot2::labs(x="Fitted model", y="Observed dataodel", title=paste0("Q-Q plot -- ", sample_df$tlx_group[1], ", ", distr, " distribution")))
+
+    bgmodel_rand_df = bgmodel_df %>%
+      dplyr::inner_join(bgmodel_data_df %>% dplyr::distinct(sample_chrom, sample_score.q999, sample_score.q500), by="sample_chrom") %>%
+      dplyr::group_by(sample_chrom) %>%
+      dplyr::summarize(dataset="Fitted model", sample_score=round(seq(0, sample_score.q500*10, length.out=10000)), sample_density=distr_call(ver="d", distr=distr, x=sample_score, params=dplyr::cur_data_all()))
     bgmodel_cutoff_df = bgmodel_df %>%
       dplyr::group_by(sample_chrom) %>%
-      dplyr::summarize(cutoff_score=qgamma(cutoff, rate=bgmodel_rate, shape=bgmodel_shape, lower.tail=F), dataset=paste0("Sign. cutoff (p<=", round(cutoff, 3), ")"))
-    ggplot(mapping=aes(x=sample_score, color=dataset)) +
-      geom_density(bw=4, data=bgmodel_data_df %>% dplyr::filter(sample_score<sample_score.q999) %>% sample_n(100000, replace=T)) +
-      geom_line(aes(y=sample_density), data=bgmodel_rand_df) +
-      geom_vline(aes(xintercept=cutoff_score, color=dataset), data=bgmodel_cutoff_df) +
-      facet_wrap(~sample_chrom, scales="free") +
-      labs(title=sample_df$tlx_group[1])
+      dplyr::summarize(cutoff_score=distr_call("q", distr, cutoff, params=dplyr::cur_data_all(), lower.tail=distr_lower.tail), dataset=paste0("Sign. cutoff (p<=", round(cutoff, 3), ")"))
+    print(ggplot2::ggplot(mapping=ggplot2::aes(x=sample_score, color=dataset)) +
+      ggplot2::geom_density(bw=1, data=bgmodel_data_df %>% dplyr::filter(sample_score<sample_score.q500*10) %>% dplyr::sample_n(100000, replace=T)) +
+      ggplot2::geom_line(ggplot2::aes(y=sample_density), data=bgmodel_rand_df) +
+      ggplot2::geom_vline(ggplot2::aes(xintercept=cutoff_score, color=dataset), data=bgmodel_cutoff_df) +
+      ggplot2::facet_wrap(~sample_chrom, scales="free") +
+      ggplot2::labs(x="Pileup", y="Density", title=paste0("Pileup density plot -- ", sample_df$tlx_group[1], ", ", distr, " distribution")))
   }
 
   writeLines("Detected bgmodel is \n==============================================\n")
@@ -119,29 +184,36 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
     # writeLines(cmd_bdgcmp)
     # system(cmd_bdgcmp)
   } else {
-    sample_df %>%
-      dplyr::select(sample_chrom, sample_start, sample_end, sample_score) %>%
-      readr::write_tsv("sample.bedgraph", col_names = F)
-    qvalues_df = sample_df %>%
+    pvalues_df = sample_df %>%
       dplyr::inner_join(control_df, by=c("sample_chrom"="control_chrom", "sample_start"="control_start", "sample_end"="control_end")) %>%
-      dplyr::group_by(bgmodel_shape, bgmodel_rate) %>%
-      dplyr::mutate(pvalue=pgamma(sample_score, shape=bgmodel_shape, rate=bgmodel_rate, lower.tail=F), bgmodel_signal=qgamma(cutoff,  bgmodel_shape, bgmodel_rate, lower.tail=F)) %>%
-      dplyr::ungroup() %>%
-      dplyr::mutate(qvalue_pvalue=pmin(pmax(pvalue, 0), 1)) %>%
-      dplyr::mutate(qvalue_pvalue=ifelse(qvalue_pvalue<=0, 315, -log10(qvalue_pvalue))) %>%
-      dplyr::mutate(qvalue=qvalue::qvalue(pvalue)$qvalues) %>%
-      dplyr::mutate(qvalue_qvalue=ifelse(qvalue<=0, 315, -log10(qvalue))) %>%
-      dplyr::ungroup() %>%
-      dplyr::select(qvalue_chrom=seqnames, qvalue_start=start, qvalue_end=end, qvalue_qvalue, qvalue_pvalue, dplyr::starts_with("bgmodel_")) %>%
-      dplyr::mutate(qvalue_score=dplyr::case_when(!is.na(params$minqvalue)~qvalue_qvalue, T~qvalue_pvalue))
-    if(F) {
-      ggplot(qvalues_df) +
-        geom_histogram(aes(x=10^-qvalue_pvalue)) +
-        facet_wrap(~qvalue_chrom, scales="free") +
-        labs(title=sample_df$tlx_group[1])
+      dplyr::group_by_at(colnames(control_df)[grepl("bgmodel_", colnames(control_df))]) %>%
+      dplyr::mutate(pvalue=distr_call("p", distr, sample_score, params=dplyr::cur_data_all(), lower.tail=distr_lower.tail), bgmodel_signal=distr_call("q", distr, cutoff[1], params=dplyr::cur_data_all(), lower.tail=distr_lower.tail)) %>%
+      dplyr::mutate(pvalue=pmax(pvalue, dpois(sample_score, 2))) %>%
+      dplyr::ungroup()
+
+    if(debug_plots==T) {
+      print(ggplot2::ggplot(pvalues_df) +
+        ggplot2::geom_histogram(ggplot2::aes(x=pvalue)) +
+        ggplot2::facet_wrap(~sample_chrom, scales="free") +
+        ggplot2::labs(title=sample_df$tlx_group[1]))
     }
 
-    qvalues_df %>%
+    qvalues_df = pvalues_df %>%
+      dplyr::mutate(qvalue_pvalue=pmin(pmax(pvalue, 0), 1)) %>%
+      dplyr::mutate(qvalue_pvalue=ifelse(qvalue_pvalue<=0, 315, -log10(qvalue_pvalue))) %>%
+      dplyr::mutate(qvalue=p.adjust(pvalue, "BH")) %>%
+      # dplyr::mutate(qvalue=qvalue::qvalue(pvalue)$qvalues) %>%
+      dplyr::mutate(qvalue_qvalue=ifelse(qvalue<=0, 315, -log10(qvalue))) %>%
+      dplyr::ungroup() %>%
+      dplyr::select(qvalue_chrom=seqnames, qvalue_start=start, qvalue_end=end, qvalue_qvalue, qvalue_pvalue, dplyr::starts_with("bgmodel_"))
+    if(!is.na(params$minqvalue)) {
+      qvalues_df$qvalue_score = qvalues_df$qvalue_qvalue
+    } else {
+      qvalues_df$qvalue_score = qvalues_df$qvalue_pvalue
+    }
+    qvalues_df$qvalue_score[is.na(qvalues_df$qvalue_score)] = 0
+
+    x = qvalues_df %>%
       dplyr::select(qvalue_chrom, qvalue_start, qvalue_end, qvalue_score) %>%
       readr::write_tsv(file=qvalue_path, col_names=F)
   }
@@ -163,7 +235,6 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
     dplyr::select(island_chrom, island_start, island_end, island_summit_abs, island_sammit_offset, island_length, island_summit_pos)
 
   if(nrow(islands_df)>0) {
-    islands_df$island_name = paste0("RDC_", stringr::str_pad(1:nrow(islands_df), 3, pad="0"))
     qvalues_ranges = qvalues_df %>% df2ranges(qvalue_chrom, qvalue_start, qvalue_end)
     islands_results_df = islands_df %>%
       df2ranges(island_chrom, island_start, island_end) %>%
@@ -179,6 +250,8 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
       dplyr::mutate(island_sammit_pos=round(sample_start[which.max(sample_score)]/2+sample_end[which.max(sample_score)]/2), island_summit_abs=max(sample_score)) %>%
       dplyr::ungroup() %>%
       dplyr::distinct_at(colnames(islands_df), .keep_all=T) %>%
+      dplyr::mutate(island_extended_start=island_start, island_extended_end=island_end, island_snr=island_summit_abs/1, island_summit_qvalue=island_qvalue) %>%
+      dplyr::mutate(island_name=paste0("RDC_", stringr::str_pad(1:dplyr::n(), 3, pad="0"))) %>%
       dplyr::select(island_name, dplyr::matches("^(island_|bgmodel_)"))
 
     #
