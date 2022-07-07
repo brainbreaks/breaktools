@@ -494,16 +494,18 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ign
       dplyr::ungroup() %>%
       dplyr::mutate(tlxcov_pileup=ifelse(tlxcov_pileup<min_sample_pileup, 0, tlxcov_pileup))
   } else {
+    sample_cols = "tlx_sample"
+    if(!ignore.strand) sample_cols = c(sample_cols, "tlx_strand")
     tlxcov_sample_df = tlx_df %>%
-      dplyr::distinct(tlx_sample, Rname, Qname, .keep_all=T) %>%
-      dplyr::group_by(tlx_sample) %>%
+      dplyr::distinct(tlx_sample, tlx_strand, Rname, Qname, .keep_all=T) %>%
+      dplyr::group_by_at(sample_cols) %>%
       dplyr::do(tlx_coverage_(., extsize=extsize, exttype=exttype)) %>%
       dplyr::ungroup() %>%
       dplyr::mutate(tlxcov_pileup=ifelse(tlxcov_pileup<min_sample_pileup, 0, tlxcov_pileup))
     tlxcov_df = tlx_df %>%
       dplyr::rename(tlxcov_chrom="Rname") %>%
       dplyr::distinct_at(c(tlxcov_cols, "tlxcov_chrom")) %>%
-      dplyr::inner_join(tlxcov_sample_df, by=c("tlx_sample", "tlxcov_chrom"))
+      dplyr::inner_join(tlxcov_sample_df, by=c(sample_cols, "tlxcov_chrom"))
   }
 
   tlxcov_df = tlxcov_df %>%
@@ -512,7 +514,7 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ign
 
   # Summarize group coverage by summing all samples in the group with each sample having a weight decided by library size
   writeLines("Adding up coverages from sample(s)...")
-  tlxcov_df %>%
+  tlxcov_ret_df = tlxcov_df %>%
     dplyr::group_by_at(group_cols) %>%
     dplyr::do((function(z){
       zz <<- z
@@ -524,6 +526,10 @@ tlx_coverage = function(tlx_df, group, extsize, exttype, libfactors_df=NULL, ign
       ret_df
     })(.)) %>%
     dplyr::ungroup()
+  if(!("tlx_strand" %in% colnames(tlxcov_ret_df))) {
+    tlxcov_ret_df$tlx_strand = "*"
+  }
+  tlxcov_ret_df
 }
 
 #' @title tlx_remove_rand_chromosomes
@@ -964,9 +970,9 @@ tlxcov_macs2 = function(tlxcov_df, group, params, debug_plots=F) {
     dplyr::group_by_at(group_cols) %>%
     dplyr::do((function(z){
       zz<<-z
-      # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Intra (Wei)")
-      # z = tlxcov_df %>% dplyr::filter(tlx_group=="DMSO-Inter (DKFZ)")
-      tlxcov_ranges = z %>% dplyr::mutate(score=tlxcov_pileup) %>% df2ranges(tlxcov_chrom, tlxcov_start, tlxcov_end)
+      # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Intra (DKFZ)")
+      # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Inter (DKFZ)")
+      tlxcov_ranges = z %>% dplyr::mutate(score=tlxcov_pileup) %>% df2ranges(tlxcov_chrom, tlxcov_start, tlxcov_end, tlx_strand)
       sample_ranges = tlxcov_ranges[!tlxcov_ranges$tlx_control]
       control_ranges = tlxcov_ranges[tlxcov_ranges$tlx_control]
 

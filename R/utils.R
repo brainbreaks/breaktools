@@ -501,16 +501,32 @@ ranges2tiles = function(ranges, column, width=1000, step=width) {
 }
 
 ranges_sample = function(ranges, column, ntile=100000) {
-  df_score = GenomicRanges::coverage(ranges, weight=GenomicRanges::mcols(ranges)[[column]])
-
-  seqlengts = as.data.frame(ranges) %>%
+  ranges_strand = as.data.frame(ranges) %>%
+    dplyr::mutate(group_name=paste0(seqnames, ";", strand)) %>%
+    dplyr::select_at(c(group_name="group_name", group_start="start", group_end="end", column)) %>%
+    df2ranges(group_name, group_start, group_end)
+  df_score = GenomicRanges::coverage(ranges_strand, weight=GenomicRanges::mcols(ranges_strand)[[column]])
+  seqlengts = as.data.frame(ranges_strand) %>%
     dplyr::group_by(seqnames) %>%
     dplyr::summarize(seqlengths=max(end)) %>%
     tibble::deframe()
   tile_ranges = unlist(GenomicRanges::tileGenome(seqlengts, ntile=ntile, cut.last.tile.in.chrom=F))
   GenomicRanges::end(tile_ranges) = GenomicRanges::start(tile_ranges)
+  as.data.frame(GenomicRanges::binnedAverage(tile_ranges, df_score, column)) %>%
+    dplyr::mutate(strand=gsub(".*;", "", seqnames), seqnames=gsub(";.*", "", seqnames)) %>%
+    GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns=T)
 
-  GenomicRanges::binnedAverage(tile_ranges, df_score, column)
+  #
+  # df_score = GenomicRanges::coverage(ranges, weight=GenomicRanges::mcols(ranges)[[column]])
+  #
+  # seqlengts = as.data.frame(ranges) %>%
+  #   dplyr::group_by(seqnames) %>%
+  #   dplyr::summarize(seqlengths=max(end)) %>%
+  #   tibble::deframe()
+  # tile_ranges = unlist(GenomicRanges::tileGenome(seqlengts, ntile=ntile, cut.last.tile.in.chrom=F))
+  # GenomicRanges::end(tile_ranges) = GenomicRanges::start(tile_ranges)
+  #
+  # GenomicRanges::binnedAverage(tile_ranges, df_score, column)
 }
 
 ranges2pure_tiles = function(ranges, column, width=1000, step=width, diff=0.1) {
