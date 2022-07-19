@@ -968,16 +968,23 @@ tlxcov_macs2 = function(tlxcov_df, group, params, debug_plots=F) {
 
   results_df = tlxcov_df %>%
     dplyr::group_by_at(group_cols) %>%
+    dplyr::mutate(macs2_group_id=dplyr::cur_group_id()) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(macs2_group_count=max(macs2_group_id)) %>%
+    dplyr::group_by_at(group_cols) %>%
     dplyr::do((function(z){
       zz<<-z
-      # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Intra (DKFZ)")
+
+      # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH (Wei+DKFZ)")
       # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Inter (DKFZ)")
+      # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Intra (DKFZ)")
+      # z = tlxcov_df %>% dplyr::filter(tlx_group=="DMSO-Intra (DKFZ)")
       tlxcov_ranges = z %>% dplyr::mutate(score=tlxcov_pileup) %>% df2ranges(tlxcov_chrom, tlxcov_start, tlxcov_end, tlx_strand)
       sample_ranges = tlxcov_ranges[!tlxcov_ranges$tlx_control]
       control_ranges = tlxcov_ranges[tlxcov_ranges$tlx_control]
 
       group_desc = paste0(group_cols, rep("=", length(group_cols)), sapply(distinct(z[,group_cols]), as.character), collapse=",")
-      writeLines(paste0("Running MACS for group {", group_desc, "}"))
+      writeLines(paste0("Running MACS for group ", z$macs2_group_id[1], "/", z$macs2_group_count[1], " {", group_desc, "}"))
       if(length(sample_ranges)==0) {
         stop("Sample data not found!")
       } else {
@@ -1004,105 +1011,4 @@ tlxcov_macs2 = function(tlxcov_df, group, params, debug_plots=F) {
     dplyr::filter_at(dplyr::vars(dplyr::starts_with("qvalue_")), dplyr::all_vars(!is.na(.))) %>%
     dplyr::select(-dplyr::starts_with("island_"))
   list(qvalues=qvalues_df, islands=islands_df)
-}
-
-#' @export
-tlx_macs2 = function(tlx_df, effective_size, maxgap=NULL, qvalue=0.01, pileup=1, extsize=2000, slocal=200000, llocal=10000000, exclude_bait_region=F, exclude_repeats=F, exclude_offtargets=F, exttype, group, tmp_dir="tmp", tmp_name=NULL) {
-  if(exclude_bait_region && !("tlx_is_bait_junction" %in% colnames(tlx_df))) {
-    stop("tlx_is_bait_junction is not found in tlx data frame")
-  }
-
-  if(is.null(tmp_name)) tmp_name=basename(tempfile())
-
-  validate_group(group)
-  validate_exttype(exttype)
-
-  macs2_tlx_df = tlx_df
-
-  if(exclude_offtargets) {
-    if(!("tlx_is_offtarget" %in% colnames(macs2_tlx_df))) {
-      stop("tlx_is_offtarget is not found in tlx data frame")
-    }
-    macs2_tlx_df = macs2_tlx_df %>% dplyr::filter(!tlx_is_offtarget)
-  }
-  if(exclude_repeats) {
-    if(!("tlx_repeatmasker_class" %in% colnames(macs2_tlx_df))) {
-      stop("tlx_repeatmasker_class is not found in tlx data frame")
-    }
-    macs2_tlx_df = macs2_tlx_df %>% dplyr::filter(is.na(tlx_repeatmasker_class))
-  }
-
-  macs2_tlx_df = macs2_tlx_df %>%
-    dplyr::filter(!exclude_bait_region | !tlx_is_bait_junction) %>%
-    dplyr::mutate(bed_strand=ifelse(Strand=="1", "-", "+"))
-
-  # @TODO: I think macs does this internally (NO!)
-  if(exttype[1]=="along") {
-    macs2_tlx_df = macs2_tlx_df %>% dplyr::mutate(bed_start=ifelse(Strand=="-1", Junction-extsize, Junction-1), bed_end=ifelse(Strand=="-1", Junction, Junction+extsize-1))
-  } else {
-    if(exttype[1]=="symmetrical") {
-      macs2_tlx_df = macs2_tlx_df %>% dplyr::mutate(bed_start=Junction-ceiling(extsize/2), bed_end=Junction+ceiling(extsize/2))
-    } else {
-      macs2_tlx_df = macs2_tlx_df %>% dplyr::mutate(bed_start=Junction, bed_end=Junction+1)
-    }
-  }
-
-  if(is.null(maxgap) || maxgap==0 || maxgap=="") {
-    maxgap = NULL
-  }
-
-  if(group=="all") {
-    macs2_tlx_df$group = "all"
-  }
-  if(group=="sample") {
-    macs2_tlx_df$group = paste(macs2_tlx_df$tlx_group, macs2_tlx_df$tlx_group_i)
-  }
-  if(group=="group") {
-    macs2_tlx_df$group = macs2_tlx_df$tlx_group
-  }
-  dir.create(tmp_dir, recursive=T, showWarnings=F)
-
-  macs_df.all = data.frame()
-  for(gr in unique(macs2_tlx_df$group)) {
-    tlx_df.gr = macs2_tlx_df %>% dplyr::filter(group==gr)
-
-    f_input_bed = file.path(tmp_dir, paste0(tmp_name, "_", gr, "_input.bed"))
-    f_control_bed = file.path(tmp_dir, paste0(tmp_name, "_", gr, "_control.bed"))
-
-    tlx_df.gr %>%
-      dplyr::filter(!tlx_control) %>%
-      dplyr::select(Rname, bed_start, bed_end, Qname, 0, bed_strand) %>%
-      readr::write_tsv(file=f_input_bed, na="", col_names=F)
-
-    if(any(tlx_df.gr$tlx_control)) {
-      tlx_df.gr %>%
-        dplyr::filter(tlx_control) %>%
-        dplyr::select(Rname, bed_start, bed_end, Qname, 0, bed_strand) %>%
-        readr::write_tsv(file=f_control_bed, na="", col_names=F)
-
-      log("Running MACS with control")
-      macs_df = macs2(name=basename(f_input_bed), sample=f_input_bed, control=f_control_bed, maxgap=maxgap, effective_size=length(unique(tlx_df.gr$tlx_path))*effective_size, extsize=extsize, qvalue=qvalue, slocal=slocal, llocal=llocal, output_dir=dirname(f_input_bed))
-    } else {
-      log("Running MACS without control")
-      macs_df = macs2(name=basename(f_input_bed), sample=f_input_bed, maxgap=maxgap, effective_size=effective_size, extsize=extsize, qvalue=qvalue, slocal=slocal, llocal=llocal, output_dir=dirname(f_input_bed))
-    }
-
-    if(group %in% c("sample", "group")) {
-      macs_df$macs_group = tlx_df.gr$tlx_group[1]
-    }
-    if(group=="sample") {
-      macs_df$tlx_group_i = tlx_df.gr$tlx_group_i[1]
-    }
-    if(group=="all") {
-      macs_df$macs_group = "all"
-    }
-    macs_df = macs_df %>% dplyr::mutate(macs_group=gr) %>%
-      dplyr::select(dplyr::matches("^(macs_group|macs_group_i)$"), dplyr::matches(".*"))
-
-    macs_df.all = rbind(macs_df.all, macs_df)
-  }
-
-  macs_df.all = macs_df.all %>% dplyr::filter(macs_pileup>=pileup)
-
-  macs_df.all
 }

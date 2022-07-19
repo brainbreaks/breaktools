@@ -6,8 +6,9 @@ macs_cols = function() {
   )
 }
 
-macs2_params = function(extsize=1e5, exttype="symetrical", llocal=1e7, minqvalue=NA_real_, minpvalue=NA_real_, maxgap=5e5, minlen=200, effective_size=1.87e9, baseline=0) {
-  as.data.frame(list(exttype=exttype, extsize=extsize, llocal=llocal, minqvalue=minqvalue, minpvalue=minpvalue, maxgap=maxgap, minlen=minlen, effective_size=effective_size, baseline=baseline))
+macs2_params = function(extsize=1e5, exttype="symetrical", llocal=1e7, minqvalue=NA_real_, minpvalue=NA_real_, maxgap=5e5, minlen=100e3, seedlen=50e3, seedgap=50e3, effective_size=1.87e9, baseline=0) {
+  as.data.frame(list(exttype=exttype, extsize=extsize, llocal=llocal, minqvalue=minqvalue, minpvalue=minpvalue, maxgap=maxgap, seedgap=seedgap, minlen=minlen, seedlen=seedlen, effective_size=effective_size, baseline=baseline)) %>%
+    dplyr::mutate(minsignif=ifelse(!is.na(minqvalue), minqvalue, minpvalue))
 }
 
 
@@ -101,9 +102,9 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
       #   fit_gamma = fitdistrplus::fitdist(z$sample_score, distr=distr, fix.arg=fixargs, method="mle")
       # }
 
-      ggplot2::ggplot(z, aes(x=sample_score, y=1)) +
-        stat_density_ridges(quantile_lines=T, calc_ecdf=T, geom="density_ridges_gradient", quantiles=probs, bandwidth=1, n = 10000) +
-        scale_x_continuous(limits = c(0, z$sample_score.q500*10))
+      # ggplot2::ggplot(z, aes(x=sample_score, y=1)) +
+      #   stat_density_ridges(quantile_lines=T, calc_ecdf=T, geom="density_ridges_gradient", quantiles=probs, bandwidth=1, n = 10000) +
+      #   scale_x_continuous(limits = c(0, z$sample_score.q500*10))
 
       # fit_gamma = MASS::fitdistr(z$sample_score, densfun="gamma")
       if(!is.null(fixargs) & length(fixargs)>0) {
@@ -145,7 +146,7 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
     bgmodel_qplot_df = bgmodel_quant_df %>%
       dplyr::inner_join(bgmodel_data_quant_df, by=c("sample_chrom", "sample_strand", "sample_quantile"))
     print(ggplot2::ggplot(bgmodel_qplot_df) +
-      ggplot2::geom_point(ggplot2::aes(x=sample_density.x, y=sample_density.y), alpha=0.5, shape=1, size=2) +
+      ggplot2::geom_hex(ggplot2::aes(x=sample_density.x, y=sample_density.y), alpha=0.5, shape=1, size=2) +
       ggplot2::facet_wrap(~sample_chrom+sample_strand, scales="free") +
       ggplot2::geom_abline(intercept=0, slope=1) +
       ggplot2::labs(x="Fitted model", y="Observed dataodel", title=paste0("Q-Q plot -- ", sample_df$tlx_group[1], ", ", distr, " distribution")))
@@ -232,7 +233,7 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
   }
 
   cmd_bdgpeakcall = stringr::str_glue("macs3 bdgpeakcall -i {qvalue} -c {cutoff} --min-length {format(minlen, scientific=F)} --max-gap {format(maxgap, scientific=F)} -o {output}",
-     qvalue=qvalue_path, output=peaks_path, cutoff=-log10(cutoff), maxgap=params$maxgap, minlen=params$minlen)
+     qvalue=qvalue_path, output=peaks_path, cutoff=-log10(cutoff), maxgap=params$seedgap, minlen=params$seedlen)
   writeLines(cmd_bdgpeakcall)
   system(cmd_bdgpeakcall)
 
@@ -246,28 +247,83 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
   islands_df = readr::read_tsv(peaks_path, skip=1, col_names=names(peaks_cols$cols), col_types=peaks_cols) %>%
     dplyr::mutate(island_length=island_end-island_start, island_summit_pos=island_start + island_sammit_offset) %>%
     dplyr::mutate(island_strand=gsub(".*;", "", island_chrom), island_chrom=gsub(";.*", "", island_chrom)) %>%
-    dplyr::select(island_chrom, island_start, island_end, island_strand, island_summit_abs, island_sammit_offset, island_length, island_summit_pos)
+    dplyr::select(island_chrom, island_start, island_end, island_strand, island_summit_abs, island_sammit_offset, island_length, island_summit_pos) %>%
+    dplyr::filter(island_length>=params$seedlen)
 
+  #
+  # Calculate extended island coordinates and reduce overlapping RDC to single instance
+  #
   if(nrow(islands_df)>0) {
     qvalues_ranges = qvalues_df %>% df2ranges(qvalue_chrom, qvalue_start, qvalue_end, qvalue_strand)
-    islands_results_df = islands_df %>%
-      df2ranges(island_chrom, island_start, island_end, island_strand) %>%
+    island_qvalues_df = islands_results_df = islands_df %>%
+      # dplyr::filter(island_chrom=="chr6" & island_start>=71199394 & island_end<=78418469) %>%
+      df2ranges(island_chrom, island_start-1e6, island_end+1e6, island_strand) %>%
       innerJoinByOverlaps(qvalues_ranges) %>%
       dplyr::group_by_at(colnames(islands_df)) %>%
       dplyr::mutate_at(dplyr::vars(dplyr::starts_with("bgmodel_")), mean) %>%
       dplyr::mutate(island_qvalue=max(qvalue_qvalue), island_pvalue=max(qvalue_pvalue)) %>%
-      dplyr::mutate(island_score_mean=weighted.mean(!is.na(qvalue_score) & qvalue_score>=-log10(cutoff)), qvalue_end-qvalue_start) %>%
+      dplyr::mutate(island_score_mean=weighted.mean(!is.na(qvalue_score) & qvalue_score>=-log10(cutoff)), qvalue_end-qvalue_start)
+
+    islands_preresults_df = island_qvalues_df %>%
       dplyr::group_by_at(colnames(islands_df)) %>%
       dplyr::do((function(y){
-        # yy<<-y
-        # y %>%
-        #   reshape2::melt(measure.vars=c("qvalue_start", "qvalue_end")) %>%
-        #   ggplot() +
-        #     geom_line(aes(x=value, y=qvalue_score))
-        y_ranges = GenomicRanges::reduce(y %>% dplyr::filter(qvalue_score>=-log10(cutoff)) %>% df2ranges(qvalue_chrom, qvalue_start, qvalue_end), min.gapwidth=params$extsize)
-        cbind(y, data.frame(island_score_maxwidth=max(GenomicRanges::width(y_ranges)), island_score_allwidth=sum(GenomicRanges::width(y_ranges))))
+        yy<<-y
+        # y = islands_results_df %>% dplyr::filter(island_chrom=="chrX" & island_start==129965403)
+        # y = islands_results_df %>% dplyr::filter(island_chrom=="chr9" & island_start==124232867)
+        # y = islands_results_df %>% dplyr::filter(island_chrom=="chr9" & island_start==3580254)
+        # y = island_qvalues_df %>% dplyr::filter(island_chrom=="chr6" & island_start==36742609)
+        y_island = y %>% dplyr::select(island_chrom, island_start, island_end, island_qvalue) %>% dplyr::slice(1)
+        y_long = y %>%
+          reshape2::melt(measure.vars=c("qvalue_start", "qvalue_end"), value.name="qvalue_pos") %>%
+          dplyr::arrange(qvalue_pos)
+        y_model = loess(qvalue_pvalue~qvalue_pos, data=y_long, span=0.2)
+        y_smooth = y_long %>%
+          dplyr::distinct(island_chrom, island_start, island_end) %>%
+          tidyr::crossing(qvalue_pos=seq(min(y_long$qvalue_pos), max(y_long$qvalue_pos), length.out=1000)) %>%
+          dplyr::mutate(qvalue_pvalue = predict(y_model, .)) %>%
+          dplyr::arrange(qvalue_pos) %>%
+          dplyr::mutate(qvalue_start=qvalue_pos, qvalue_end=dplyr::lead(qvalue_pos, 1)) %>%
+          dplyr::arrange(qvalue_start) %>%
+          dplyr::mutate(qvalue_pvalue.diff=(qvalue_pvalue-dplyr::lag(qvalue_pvalue, 1))/(qvalue_end-qvalue_start)) %>%
+          dplyr::filter(!is.na(qvalue_pvalue) & !is.na(qvalue_end))
+
+        y_extended = y_smooth %>%
+          dplyr::mutate(island_mid=(island_end+island_start)/2) %>%
+          dplyr::filter(
+            qvalue_pvalue >= -log10(cutoff) |
+            qvalue_pvalue >= -log10(0.1) & (qvalue_start <= island_start & qvalue_pvalue.diff>=1e-6 | qvalue_end >= island_end & qvalue_pvalue.diff<=-1e-6)
+          ) %>%
+          dplyr::rename(extended_chrom="island_chrom", extended_start="qvalue_start", extended_end="qvalue_end") %>%
+          df2ranges(extended_chrom, extended_start, extended_end) %>%
+          GenomicRanges::reduce() %>%
+          dplyr::filter(width>=10e3) %>%
+          GenomicRanges::reduce(min.gapwidth=params$maxgap) %>%
+          as.data.frame() %>%
+          dplyr::rename(extended_chrom="seqnames", extended_start="start", extended_end="end") %>%
+          # dplyr::mutate(island_chrom=y$island_chrom[1], island_start=y$island_start[1], island_end=y$island_end[1])
+          df2ranges(extended_chrom, extended_start, extended_end) %>%
+          innerJoinByOverlaps(y_long %>% dplyr::distinct(island_chrom, island_start, island_end) %>% df2ranges(island_chrom, island_start, island_end))
+
+        res_df = data.frame(island_extended_start=min(c(y$island_start, y_extended$extended_start)), island_extended_end=max(c(y$island_end, y_extended$extended_end)))
+        #
+        # p_min = min(y_long$qvalue_pvalue)
+        # p_range = diff(range(y_long$qvalue_pvalue))
+        # p = ggplot(y_long) +
+        #     # geom_hline(yintercept=-log10(0.5), color="#CCCCCC") +
+        #     geom_line(aes(x=qvalue_pos, y=qvalue_pvalue, color=island_strand)) +
+        #     geom_line(aes(x=qvalue_pos, y=qvalue_pvalue, color="smooth fit"), data=y_smooth %>% dplyr::mutate(qvalue_pvalue=pmax(qvalue_pvalue, 0))) +
+        #     # geom_segment(aes(x=extended_start, xend=extended_end, color="extended2"), y=p_min+p_range*0.01, yend=p_min+p_range*0.01, data=y_extended2) +
+        #     geom_segment(aes(x=extended_start, xend=extended_end, color="extended"), y=p_min+p_range*0.02, yend=p_min+p_range*0.02, data=y_extended) +
+        #     geom_segment(aes(x=island_start, xend=island_end, color="island"), y=p_min+p_range*0.035, yend=p_min+p_range*0.035, data=y_island) +
+        #     geom_segment(aes(x=island_extended_start, xend=island_extended_end), y=p_min+p_range*0.05, yend=p_min+p_range*0.05, data=res_df) +
+        #     labs(title=paste0(y$island_chrom[1], ":", y$island_start[1], "-", y$island_end[1]))
+        # print(p)
+
+        cbind(y_island, res_df)
       })(.)) %>%
       dplyr::ungroup() %>%
+      dplyr::mutate(island_extended_length=island_extended_end-island_extended_start) %>%
+      dplyr::filter(island_extended_length>=params$minlen) %>%
       dplyr::distinct_at(colnames(islands_df), .keep_all=T) %>%
       df2ranges(island_chrom, island_start, island_end, island_strand) %>%
       innerJoinByOverlaps(sample_ranges) %>%
@@ -275,76 +331,37 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, tmp_prefix
       dplyr::mutate(island_sammit_pos=round(sample_start[which.max(sample_score)]/2+sample_end[which.max(sample_score)]/2), island_summit_abs=max(sample_score)) %>%
       dplyr::ungroup() %>%
       dplyr::distinct_at(colnames(islands_df), .keep_all=T) %>%
-      dplyr::mutate(island_extended_start=island_start, island_extended_end=island_end, island_snr=island_summit_abs/1, island_summit_qvalue=island_qvalue) %>%
-      dplyr::mutate(island_name=paste0("RDC_", stringr::str_pad(1:dplyr::n(), 3, pad="0"))) %>%
-      dplyr::select(island_name, dplyr::matches("^(island_|bgmodel_)"))
-
-    # islands_results_df = islands_df %>%
-    #   df2ranges(island_chrom, island_start, island_end) %>%
-    #   innerJoinByOverlaps(qvalues_ranges) %>%
-    #   dplyr::group_by_at(colnames(islands_df)) %>%
-    #   dplyr::do((function(z){
-    #     zz<<-z
-    #     asdsad()
-    #   })(.))
-    #
-    # islands_df %>%
-    #   dplyr::mutate(island_id=paste0(island_chrom, ":", island_start, "-", island_end)) %>%
-    #   df2ranges(island_chrom, island_start, island_end) %>%
-    #   innerJoinByOverlaps(qvalues_ranges) %>%
-    #   dplyr::group_by(island_id) %>%
-    #   dplyr::summarize(qvalue_score_mean=mean(qvalue_score>=-log10(cutoff)))
-
-    # islands_df %>%
-    #   dplyr::mutate(island_id=paste0(island_chrom, ":", island_start, "-", island_end)) %>%
-    #   df2ranges(island_chrom, island_start, island_end) %>%
-    #   innerJoinByOverlaps(qvalues_ranges) %>%
-    #   dplyr::group_by(island_id) %>%
-    #   # dplyr::arrange(qvalue_score) %>%
-    #   dplyr::mutate(i=(1:dplyr::n())/dplyr::n()) %>%
-    #   dplyr::ungroup() %>%
-    #   ggplot() +
-    #   ggridges::geom_ridgeline(aes(x=i, height=qvalue_score, y=island_id), alpha=0.8)
-    # print("")
-
-    #
-    # Extended island coordinates
-    #
-    # sample_ranges1 = as.data.frame(sample_ranges) %>%
-    #   dplyr::select(sample_chrom=seqnames, sample_start=start, sample_end=end, sample_score=score) %>%
-    #   df2ranges(sample_chrom, sample_start, sample_end)
-    # control_ranges1 = as.data.frame(control_ranges) %>%
-    #   dplyr::select(control_chrom=seqnames, control_start=start, control_end=end, control_score=score) %>%
-    #   df2ranges(control_chrom, control_start, control_end)
-    # bgmodel_ranges = innerJoinByOverlaps(sample_ranges1, control_ranges1) %>%
-    #   dplyr::filter(sample_score>=control_score) %>%
-    #   df2ranges(sample_chrom, sample_start, sample_end) %>%
-    #   GenomicRanges::reduce() %>%
-    #   as.data.frame() %>%
-    #   dplyr::select(island_extended_chrom=seqnames, island_extended_start=start, island_extended_end=end) %>%
-    #   df2ranges(island_extended_chrom, island_extended_start, island_extended_end)
-    # islands_df = islands_df %>%
-    #   df2ranges(island_chrom, island_start, island_end) %>%
-    #   leftJoinByOverlaps(bgmodel_ranges) %>%
-    #   dplyr::group_by(island_chrom, island_start, island_end) %>%
-    #   dplyr::mutate(island_extended_start=min(island_extended_start), island_extended_end=max(island_extended_end)) %>%
-    #   dplyr::slice(1) %>%
-    #   dplyr::select(-island_extended_chrom) %>%
-    #   dplyr::ungroup()
+      dplyr::select(dplyr::matches("^(island_|bgmodel_)"))
+  islands_preresults_ranges = islands_preresults_df %>%
+    df2ranges(island_chrom, island_extended_start, island_extended_end, island_strand)
+  islands_results_df = islands_preresults_ranges %>%
+    GenomicRanges::reduce() %>%
+    as.data.frame() %>%
+    dplyr::rename(reduced_chrom="seqnames", reduced_start="start", reduced_end="end", reduced_strand="strand") %>%
+    df2ranges(reduced_chrom, reduced_start, reduced_end, reduced_strand) %>%
+    innerJoinByOverlaps(islands_preresults_ranges) %>%
+    dplyr::group_by(island_chrom=reduced_chrom, island_extended_start=reduced_start, island_extended_end=reduced_end, island_strand=reduced_strand) %>%
+    dplyr::summarize(
+      island_start=min(island_start),
+      island_end=max(island_end),
+      island_length=island_end-island_start,
+      island_extended_length=island_extended_end[1]-island_extended_start[1],
+      island_sammit_offset=island_sammit_offset[which.max(island_qvalue)],
+      island_summit_abs=island_summit_abs[which.max(island_qvalue)],
+      island_summit_pos=island_summit_pos[which.max(island_qvalue)],
+      island_qvalue=island_qvalue[which.max(island_qvalue)]) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(island_name=paste0("RDC_", stringr::str_pad(1:dplyr::n(), 3, pad="0")))
   } else {
     islands_results_df = islands_df
     islands_results_df$island_name = character()
-    islands_results_df$island_summit_qvalue = double()
     islands_results_df$island_summit_abs = double()
     islands_results_df$island_summit_pos = double()
     islands_results_df$island_extended_start = double()
     islands_results_df$island_extended_end = double()
+    islands_results_df$island_extended_length = double()
+    islands_results_df$island_length = double()
   }
-
-  islands_results_df %>%
-    dplyr::select(island_chrom, island_start, island_end, island_name, island_score_maxwidth, island_strand) %>%
-    readr::write_tsv(file="stranded.bed", col_names=F)
-  print("")
 
   list(qvalues=qvalues_df, islands=islands_results_df)
 }
