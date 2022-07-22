@@ -488,45 +488,111 @@ trim = function(value, lb, ub) {
   pmin(pmax(value, lb), ub)
 }
 
-ranges2tiles = function(ranges, column, width=1000, step=width) {
-  df_score = GenomicRanges::coverage(ranges, weight=GenomicRanges::mcols(ranges)[[column]])
+distr_call = function(ver, distr, x, params, lower.tail=T) {
+  # z.ver <<- ver
+  # z.distr <<- distr
+  # z.x <<- x
+  # z.params <<- params
+  # z.lower.tail <<- lower.tail
+  # ver = z.ver
+  # distr=z.distr
+  # x=z.x
+  # params=z.params
+  # lower.tail=z.lower.tail
 
-  seqlengts = as.data.frame(ranges) %>%
-    dplyr::group_by(seqnames) %>%
-    dplyr::summarize(seqlengths=max(end)) %>%
-    tibble::deframe()
-  df_bins_template = GenomicRanges::tileGenome(seqlengts, tilewidth=width, cut.last.tile.in.chrom=T)
-  df_bins = GenomicRanges::sort(df_bins)
-  GenomicRanges::binnedAverage(df_bins, df_score, column)
+
+  params_clean = params %>%
+    dplyr::select(dplyr::starts_with("bgmodel_"), -bgmodel_distr) %>%
+    dplyr::slice(1) %>%
+    setNames(gsub("bgmodel_", "", colnames(.))) %>%
+    as.list()
+  if(ver=="d") params_clean[["x"]] = x
+  if(ver=="r") params_clean[["n"]] = x
+  if(ver=="p") params_clean[["q"]] = x
+  if(ver=="q") params_clean[["p"]] = x
+  if(ver=="p" || ver=="q") params_clean[["lower.tail"]] = lower.tail
+
+  do.call(paste0(ver, distr), params_clean)
 }
 
-ranges_sample = function(ranges, column, ntile=100000) {
-  ranges_strand = as.data.frame(ranges) %>%
-    dplyr::mutate(group_name=paste0(seqnames, ";", strand)) %>%
-    dplyr::select_at(c(group_name="group_name", group_start="start", group_end="end", column)) %>%
-    df2ranges(group_name, group_start, group_end)
-  df_score = GenomicRanges::coverage(ranges_strand, weight=GenomicRanges::mcols(ranges_strand)[[column]])
-  seqlengts = as.data.frame(ranges_strand) %>%
+coverage_find_empty_intervals = function(coverage_ranges, coverage_column="score", minlen=1e6, mincoverage=0)
+{
+  mask_ranges = GenomicRanges::reduce(coverage_ranges[GenomicRanges::mcols(coverage_ranges)[[coverage_column]]==mincoverage]) %>%
+    as.data.frame() %>%
     dplyr::group_by(seqnames) %>%
-    dplyr::summarize(seqlengths=max(end)) %>%
-    tibble::deframe()
-  tile_ranges = unlist(GenomicRanges::tileGenome(seqlengts, ntile=ntile, cut.last.tile.in.chrom=F))
-  GenomicRanges::end(tile_ranges) = GenomicRanges::start(tile_ranges)
-  as.data.frame(GenomicRanges::binnedAverage(tile_ranges, df_score, column)) %>%
-    dplyr::mutate(strand=gsub(".*;", "", seqnames), seqnames=gsub(";.*", "", seqnames)) %>%
-    GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns=T)
+    dplyr::filter(width>=minlen) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(mask_chrom=seqnames, mask_start=start, mask_end=end) %>%
+    df2ranges(mask_chrom, mask_start, mask_end)
+
+  # as.data.frame(mask_ranges) %>%
+  #   dplyr::group_by(mask_chrom) %>%
+  #   dplyr::summarize(mask_width=sum(width)) %>%
+  #   dplyr::right_join(coverage_df %>% dplyr::group_by(coverage_chrom) %>% dplyr::summarize(mask_chromlen=max(coverage_end)), by=c("mask_chrom"="coverage_chrom")) %>%
+  #   dplyr::mutate(mask_proportion=mask_width/mask_chromlen) %>%
+  #   data.frame()
+
+  mask_ranges
+}
+
+ranges_sample = function(ranges, mask_ranges, column, ntile=100000) {
+  ranges_df = as.data.frame(ranges)
 
   #
-  # df_score = GenomicRanges::coverage(ranges, weight=GenomicRanges::mcols(ranges)[[column]])
+  # Prepare a strand-specific version of sampled ranges and calculate coverage coverage
   #
-  # seqlengts = as.data.frame(ranges) %>%
-  #   dplyr::group_by(seqnames) %>%
-  #   dplyr::summarize(seqlengths=max(end)) %>%
-  #   tibble::deframe()
+  ranges_strand_df = ranges_df %>%
+    dplyr::mutate(group_name=paste0(seqnames, ";", strand)) %>%
+    dplyr::select_at(c(group_name="group_name", group_start="start", group_end="end", column))
+  ranges_strand = ranges_strand_df %>%
+    df2ranges(group_name, group_start, group_end)
+  df_score = GenomicRanges::coverage(ranges_strand, weight=GenomicRanges::mcols(ranges_strand)[[column]])
+
+  #
+  # Prepare a strand-specific version of mask that shall be removed from sampling
+  #
+  mask_strand_ranges = as.data.frame(mask_ranges)%>%
+    dplyr::select(mask_chrom, mask_start, mask_end) %>%
+    tidyr::crossing(data.frame(strand=unique(ranges_df$strand)))%>%
+    dplyr::mutate(mask_chrom=paste0(mask_chrom, ";", strand))%>%
+    df2ranges(mask_chrom, mask_start, mask_end)
+
+  #
+  # Prepare a strand-specific genome ranges object to be sampled
+  #
+  seqlengts_strand_df = ranges_strand_df %>%
+    dplyr::group_by(group_name) %>%
+    dplyr::summarize(seqlengths=max(group_end))
+  genome_strand_ranges = seqlengts_strand_df %>%
+    df2ranges(group_name, 1, seqlengths)
+
+  sampled_ranges = GenomicRanges::setdiff(genome_strand_ranges, mask_strand_ranges)
+  tile_ranges = unlist(GenomicRanges::tile(sampled_ranges, width=round(sum(GenomicRanges::width(sampled_ranges))/ntile)))
+  GenomicRanges::end(tile_ranges) = GenomicRanges::start(tile_ranges)
+  GenomeInfoDb::seqlevels(tile_ranges) = names(df_score)
+
+  seqlevels(tile_ranges)==names(df_score)
+
   # tile_ranges = unlist(GenomicRanges::tileGenome(seqlengts, ntile=ntile, cut.last.tile.in.chrom=F))
   # GenomicRanges::end(tile_ranges) = GenomicRanges::start(tile_ranges)
-  #
-  # GenomicRanges::binnedAverage(tile_ranges, df_score, column)
+
+  ret = as.data.frame(GenomicRanges::binnedAverage(tile_ranges, df_score, column)) %>%
+    dplyr::mutate(strand=gsub(".*;", "", seqnames), seqnames=gsub(";.*", "", seqnames)) %>%
+    GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns=T) %>%
+    as.data.frame()
+
+  # ranges_sumdf = ranges_df %>%
+  #   dplyr::group_by(sample_chrom) %>%
+  #   dplyr::summarize(orig_prop=sum(width[sample_score>1]))
+  # ret_sumdf = ret %>%
+  #   dplyr::group_by(seqnames) %>%
+  #   dplyr::summarize(sample_prop=sum(sample_score>1))
+  # ranges_sumdf %>%
+  #   dplyr::inner_join(ret_sumdf, by=c("sample_chrom"="seqnames")) %>%
+  #   ggplot() +
+  #     geom_point(aes(x=orig_prop, y=sample_prop))
+
+  ret
 }
 
 ranges2pure_tiles = function(ranges, column, width=1000, step=width, diff=0.1) {

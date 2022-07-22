@@ -70,7 +70,7 @@ tlx_generate_filename_col = function(df, include_sample=F, include_group=F, incl
   if(include_strand & !("tlx_strand" %in% colnames(df))) stop(simpleError("tlx_strand column is not pressent in data.frame"))
   if(include_treatment & !("tlx_control" %in% colnames(df))) stop(simpleError("tlx_control column is not pressent in data.frame"))
 
-  map_strand = c("+"="plus", "-"="minus")
+  map_strand = c("+"="plus", "-"="minus", "*"="both")
   filenames_df = df %>% dplyr::select()
   if(include_group) filenames_df$group = df$tlx_group
   if(include_sample) filenames_df$sample = df$tlx_sample
@@ -200,21 +200,29 @@ tlx_read_many = function(samples_df, threads=1) {
 
 #' @export
 #'
-tlxcov_write_bedgraph = function(tlxcov_df, path, group) {
-  ignore.strand = !("tlx_strand" %in% colnames(tlxcov_df))
-
+tlxcov_write_bedgraph = function(tlxcov_df, path, group, ignore.strand=T) {
   writeLines("calculating filenames(s)...")
   path = paste0(path, "XXXXXXXXXXXX")
-  if(group=="all") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=gsub("XXXXXXXXXXXX", "", paste0(dirname(path), "/", basename(path), ifelse(basename(path)=="XXXXXXXXXXXX", "", "-"), tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph")))
-  if(group=="group") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=gsub("XXXXXXXXXXXX", "", paste0(dirname(path), "/", basename(path), ifelse(basename(path)=="XXXXXXXXXXXX", "", "-"), tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph")))
-  if(group=="sample") tlxcov_df = tlxcov_df %>% dplyr::mutate(g=gsub("XXXXXXXXXXXX", "", paste0(dirname(path), "/", basename(path), ifelse(basename(path)=="XXXXXXXXXXXX", "", "-"), tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=!ignore.strand), ".bedgraph")))
-  if(!ignore.strand) tlxcov_df = tlxcov_df %>% dplyr::mutate(tlxcov_pileup=ifelse(tlx_strand=="+", 1, -1)*tlxcov_pileup)
+  if(group=="all") tlxcov_df = tlxcov_df %>%
+    dplyr::mutate(g_dir=paste0(dirname(path), "/", basename(path), ifelse(basename(path)=="XXXXXXXXXXXX", "", "-"))) %>%
+    dplyr::mutate(g=paste0(g_dir, tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph")) %>%
+    dplyr::mutate(g=gsub("XXXXXXXXXXXX", "", g))
+  if(group=="group") tlxcov_df = tlxcov_df %>%
+    dplyr::mutate(g_dir=paste0(dirname(path), "/", basename(path), ifelse(basename(path)=="XXXXXXXXXXXX", "", "-"))) %>%
+    dplyr::mutate(g=paste0(g_dir, tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=T, include_strand=!ignore.strand), ".bedgraph")) %>%
+    dplyr::mutate(g=gsub("XXXXXXXXXXXX", "", g))
+  if(group=="sample") tlxcov_df = tlxcov_df %>%
+    dplyr::mutate(g_dir=paste0(dirname(path), "/", basename(path), ifelse(basename(path)=="XXXXXXXXXXXX", "", "-"))) %>%
+    dplyr::mutate(g=paste0(g_dir, tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=T, include_strand=!ignore.strand), ".bedgraph")) %>%
+    dplyr::mutate(g=gsub("XXXXXXXXXXXX", "", g))
+  if(!ignore.strand) tlxcov_df = tlxcov_df %>% dplyr::mutate(tlxcov_pileup=ifelse(tlx_strand %in% c("+", "*"), 1, -1)*tlxcov_pileup)
 
 
   writeLines("Writing bedgraph file(s)...")
   tlxcov_df %>%
     dplyr::group_by(g) %>%
     dplyr::do((function(z){
+      # z = tlxcov_df %>% dplyr::filter(g=="reports/detect_offtargets/off-Chr5_101Mb_trmnt_both.bedgraph")
       z.out = z %>% dplyr::select(tlxcov_chrom, tlxcov_start, tlxcov_end, tlxcov_pileup)
       z.path = z$g[1]
       if(!dir.exists(dirname(z.path))) dir.create(dirname(z.path), recursive=T)
@@ -962,7 +970,7 @@ geom_tlxcov = function(x, scale=1) {
 
 
 #' @export
-tlxcov_macs2 = function(tlxcov_df, group, params, debug_plots=F) {
+tlxcov_macs2 = function(tlxcov_df, group, bgmodel_df, params, extended_islands=F, debug_plots=F) {
   validate_group(group)
   group_cols = tlx_get_group_cols(group, ignore.strand=T, ignore.control=T)
 
@@ -975,6 +983,7 @@ tlxcov_macs2 = function(tlxcov_df, group, params, debug_plots=F) {
     dplyr::do((function(z){
       zz<<-z
 
+      # z = tlxcov_df %>% dplyr::filter(tlx_group=="Chr5_101Mb")
       # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH (Wei+DKFZ)")
       # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Inter (DKFZ)")
       # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Intra (DKFZ)")
@@ -989,12 +998,13 @@ tlxcov_macs2 = function(tlxcov_df, group, params, debug_plots=F) {
         stop("Sample data not found!")
       } else {
         writeLines(paste0("Finding islands with ", length(sample_ranges), " sample value points and ", length(control_ranges), " control value points..."))
-        if(length(control_ranges)==0) {
-          writeLines("Calculating background from sample data")
-        }
+        # if(length(control_ranges)==0) {
+        #   writeLines("Using background from bgmodel data")
+        # }
       }
 
-      results = macs2_coverage(sample_ranges=sample_ranges, control_ranges=control_ranges, params=params, debug_plots=debug_plots)
+      z.bgmodel_df = bgmodel_df %>% dplyr::filter(tlx_group==z$tlx_group[1]) %>% dplyr::select(-dplyr::matches("tlx_group"))
+      results = macs2_coverage(sample_ranges=sample_ranges, control_ranges=control_ranges, params=params, extended_islands=extended_islands, bgmodel_df=z.bgmodel_df, debug_plots=debug_plots)
       results_df = dplyr::bind_cols(z[1,group_cols], dplyr::bind_rows(results[["islands"]], results[["qvalues"]])) %>%
         dplyr::relocate(dplyr::matches("qvalue_|island_"), .after=tidyselect::last_col())
       results_df
@@ -1002,13 +1012,14 @@ tlxcov_macs2 = function(tlxcov_df, group, params, debug_plots=F) {
     dplyr::ungroup()
 
   islands_df = results_df %>%
-    dplyr::filter_at(dplyr::vars(dplyr::starts_with("island_")), dplyr::all_vars(!is.na(.))) %>%
+    dplyr::filter_at(dplyr::vars(dplyr::starts_with("island_")), dplyr::any_vars(!is.na(.))) %>%
     dplyr::select(-dplyr::starts_with("qvalue_")) %>%
-    dplyr::mutate(island_name=paste0("MACS3_", stringr::str_pad((0:(dplyr::n()))[-1], 3, pad="0"))) %>%
-    dplyr::relocate(island_name)
+    dplyr::mutate(island_name=paste0("RDC_", stringr::str_pad((0:(dplyr::n()))[-1], 3, pad="0"))) %>%
+    dplyr::relocate(island_name) %>%
+    dplyr::select(dplyr::matches(paste0("^", paste(group_cols, collapse="|"), "$")), dplyr::starts_with("island_"))
 
   qvalues_df = results_df %>%
-    dplyr::filter_at(dplyr::vars(dplyr::starts_with("qvalue_")), dplyr::all_vars(!is.na(.))) %>%
+    dplyr::filter_at(dplyr::vars(dplyr::starts_with("qvalue_")), dplyr::any_vars(!is.na(.))) %>%
     dplyr::select(-dplyr::starts_with("island_"))
   list(qvalues=qvalues_df, islands=islands_df)
 }
