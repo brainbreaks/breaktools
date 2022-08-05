@@ -502,7 +502,7 @@ distr_call = function(ver, distr, x, params, lower.tail=T) {
 
 
   params_clean = params %>%
-    dplyr::select(dplyr::starts_with("bgmodel_"), -bgmodel_distr) %>%
+    dplyr::select(dplyr::starts_with("bgmodel_"), -dplyr::matches("bgmodel_distr|bgmodel_chrom|bgmodel_strand")) %>%
     dplyr::slice(1) %>%
     setNames(gsub("bgmodel_", "", colnames(.))) %>%
     as.list()
@@ -517,6 +517,9 @@ distr_call = function(ver, distr, x, params, lower.tail=T) {
 
 coverage_find_empty_intervals = function(coverage_ranges, coverage_column="score", minlen=1e6, mincoverage=0)
 {
+  if(!(coverage_column %in% colnames(GenomicRanges::mcols(coverage_ranges)))) {
+    stop(paste0("Column '", coverage_column, "' not found in coverage ranges data columns"))
+  }
   mask_ranges = GenomicRanges::reduce(coverage_ranges[GenomicRanges::mcols(coverage_ranges)[[coverage_column]]==mincoverage]) %>%
     as.data.frame() %>%
     dplyr::group_by(seqnames) %>%
@@ -525,14 +528,37 @@ coverage_find_empty_intervals = function(coverage_ranges, coverage_column="score
     dplyr::select(mask_chrom=seqnames, mask_start=start, mask_end=end) %>%
     df2ranges(mask_chrom, mask_start, mask_end)
 
-  # as.data.frame(mask_ranges) %>%
-  #   dplyr::group_by(mask_chrom) %>%
-  #   dplyr::summarize(mask_width=sum(width)) %>%
-  #   dplyr::right_join(coverage_df %>% dplyr::group_by(coverage_chrom) %>% dplyr::summarize(mask_chromlen=max(coverage_end)), by=c("mask_chrom"="coverage_chrom")) %>%
-  #   dplyr::mutate(mask_proportion=mask_width/mask_chromlen) %>%
-  #   data.frame()
-
   mask_ranges
+}
+
+coverage_merge_strands = function(coverage_ranges, aggregate_fun, score_column="score")
+{
+  coverage_df = as.data.frame(coverage_ranges) %>% dplyr::select_at(c(raw_seqnames="seqnames", raw_start="start", raw_end="end", raw_strand="strand", raw_score=score_column))
+  coverage_clean_ranges = coverage_df %>% df2ranges(raw_seqnames, raw_start, raw_end, raw_strand)
+  merged_long_df = coverage_df %>%
+    reshape2::melt(measure.vars=c("raw_start", "raw_end"), value.name="sum_pos") %>%
+    dplyr::distinct_at(c(sum_seqnames="raw_seqnames", "sum_pos")) %>%
+    dplyr::arrange(sum_seqnames, sum_pos) %>%
+    dplyr::mutate(sum_start=dplyr::lag(sum_pos), sum_end=sum_pos-1, sum_start=ifelse(sum_start>sum_end, 1, sum_start)) %>%
+    dplyr::filter(!is.na(sum_start)) %>%
+    dplyr::select(sum_seqnames, sum_start, sum_end) %>%
+    df2ranges(sum_seqnames, sum_start, sum_end) %>%
+    innerJoinByOverlaps(coverage_clean_ranges)
+
+  merged_long_test = merged_long_df %>%
+    dplyr::group_by(sum_seqnames, sum_start, sum_end, raw_strand) %>%
+    dplyr::filter(dplyr::n()>1)
+  if(nrow(merged_long_test)>0) {
+    stop(paste0("Found overlaping regions in single strand data.\nCheck that strand information is not missing from provided ranges object.\nStrands present in ranges object: ", paste(as.character(unique(coverage_df$raw_strand)), collapse=",")))
+  }
+
+  res_strands = as.character(unique(merged_long_df$raw_strand))
+  merged_wide_df = merged_long_df %>%
+    reshape2::dcast(sum_seqnames+sum_start+sum_end ~ raw_strand, value.var="raw_score") %>%
+    replace(is.na(.), 0)
+  merged_wide_df$score = apply(merged_wide_df[, res_strands, drop=F], 1, FUN=aggregate_fun)
+  merged_wide_ranges = GenomicRanges::makeGRangesFromDataFrame(merged_wide_df, ignore.strand=T, keep.extra.columns=T)
+  as(GenomicRanges::coverage(merged_wide_ranges, weight=mcols(merged_wide_ranges)$score), "GRanges")
 }
 
 ranges_sample = function(ranges, mask_ranges, column, ntile=100000) {
@@ -570,27 +596,12 @@ ranges_sample = function(ranges, mask_ranges, column, ntile=100000) {
   tile_ranges = unlist(GenomicRanges::tile(sampled_ranges, width=round(sum(GenomicRanges::width(sampled_ranges))/ntile)))
   GenomicRanges::end(tile_ranges) = GenomicRanges::start(tile_ranges)
   GenomeInfoDb::seqlevels(tile_ranges) = names(df_score)
-
-  seqlevels(tile_ranges)==names(df_score)
-
   # tile_ranges = unlist(GenomicRanges::tileGenome(seqlengts, ntile=ntile, cut.last.tile.in.chrom=F))
   # GenomicRanges::end(tile_ranges) = GenomicRanges::start(tile_ranges)
 
   ret = as.data.frame(GenomicRanges::binnedAverage(tile_ranges, df_score, column)) %>%
     dplyr::mutate(strand=gsub(".*;", "", seqnames), seqnames=gsub(";.*", "", seqnames)) %>%
-    GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns=T) %>%
-    as.data.frame()
-
-  # ranges_sumdf = ranges_df %>%
-  #   dplyr::group_by(sample_chrom) %>%
-  #   dplyr::summarize(orig_prop=sum(width[sample_score>1]))
-  # ret_sumdf = ret %>%
-  #   dplyr::group_by(seqnames) %>%
-  #   dplyr::summarize(sample_prop=sum(sample_score>1))
-  # ranges_sumdf %>%
-  #   dplyr::inner_join(ret_sumdf, by=c("sample_chrom"="seqnames")) %>%
-  #   ggplot() +
-  #     geom_point(aes(x=orig_prop, y=sample_prop))
+    GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns=T)
 
   ret
 }

@@ -396,7 +396,7 @@ tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.stra
   if(mode=="alignment") tlx_bed_df = tlx_df %>% dplyr::mutate(start=Rstart, end=Rend, name=paste0(Qname, " (", tlx_sample, ")"))
 
   writeLines("calculating filenames(s)...")
-  if(group=="all") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=F, include_treatment=!ignore.treatment, include_strand=!ignore.strand))
+  if(group=="all") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g="all")
   if(group=="group") tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=T, include_sample=F, include_treatment=!ignore.treatment, include_strand=!ignore.strand))
   if(group %in% c("sample", "none")) tlx_bed_df = tlx_bed_df %>% dplyr::mutate(g=tlx_generate_filename_col(., include_group=F, include_sample=T, include_treatment=!ignore.treatment, include_strand=!ignore.strand))
 
@@ -405,8 +405,9 @@ tlx_write_bed = function(tlx_df, path, group="all", mode="junction", ignore.stra
     dplyr::group_by(g) %>%
     dplyr::do((function(z){
       z.out = z %>%
-        dplyr::mutate(thickStart=start, thickEnd=end, score=1, rgb=dplyr::case_when(tlx_strand=="+"~"255,0,0", tlx_strand=="-"~"0,0,255", T~"0,0,0")) %>%
-        dplyr::select(Rname, start, end, name, score, tlx_strand, thickStart, thickEnd, rgb)
+        dplyr::mutate(thickStart=dplyr::case_when(mode=="alignment"~Junction, T~start), thickEnd=dplyr::case_when(mode=="alignment"~Junction+1, T~end), score=1, rgb=dplyr::case_when(tlx_strand=="+"~"255,0,0", tlx_strand=="-"~"0,0,255", T~"0,0,0")) %>%
+        dplyr::select(Rname, start, end, name, score, tlx_strand, thickStart, thickEnd, rgb) %>%
+        dplyr::arrange(Rname, start, end, tlx_strand)
       z.path = paste0(path, "XXXXXXXXXXXX")
       if(!dir.exists(dirname(z.path))) dir.create(dirname(z.path), recursive=T)
       z.path = file.path(dirname(z.path), paste0(basename(z.path), ifelse(basename(z.path)=="XXXXXXXXXXXX", "", "-"), z$g[1], ".bed"))
@@ -824,50 +825,6 @@ tlx_extract_bait = function(tlx_df, bait_size, bait_region) {
     dplyr::mutate(tlx_is_bait_junction=B_Rname==Rname & (abs(tlx_bait_start-Junction)<=bait_region/2 | abs(tlx_bait_end-Junction)<=bait_region/2))
 }
 
-tlx_find_offtargets = function(tlx_df, baits_df) {
-  tlx_offtarget_df = tlx_df %>%
-    dplyr::mutate(tlx_group=paste0(Rname, B_Rname))
-
-    libfactors_bait_df = tlx_libfactors(, normalize_within="group", normalize_between="none", normalization_target="min")
-
-  #
-  # Indentify offtarget candidates
-  #
-  offtargets_params = macs2_params(extsize=50, exttype="opposite", llocal=1e7, minqvalue=0.05, effective_size=1.87e9, maxgap=1e3, minlen=10)
-  tlx_offtarget_df = tlx_df %>%
-    dplyr::filter(!tlx_control & tlx_is_bait_chrom & !tlx_is_bait_junction) %>%
-    dplyr::mutate(tlx_group=bait_chrom)
-  tlxcov_offtargets_df = tlx_offtarget_df %>%
-    tlx_coverage(group="group", extsize=offtargets_params$extsize, exttype=offtargets_params$exttype, libfactors_df=libfactors_bait_df, ignore.strand=T)
-  macs_offtargets = tlxcov_macs2(tlxcov_offtargets_df, group="group", offtargets_params)
-
-  # Export debuging info
-  tlx_write_bed(tlx_offtarget_df, "reports/APH_concentration/offtargets", "all", mode="alignment")
-  tlxcov_write_bedgraph(tlxcov_offtargets_df, "reports/APH_concentration/offtargets", "all")
-  macs_offtargets$islands %>%
-    dplyr::mutate(score=1) %>%
-    dplyr::select(island_chrom, island_start, island_end, score) %>%
-    readr::write_tsv("reports/APH_concentration/offtargets-islands.bed", col_names=F)
-  macs_offtargets$qvalues %>%
-    dplyr::select(qvalue_chrom, qvalue_start, qvalue_end, qvalue_score) %>%
-    readr::write_tsv("reports/APH_concentration/offtargets-qvalues.bedgraph", col_names = F)
-
-
-  #
-  # Mark offtargets
-  #
-  offtargets_df = readr::read_tsv("~/Workspace/Datasets/HTGTS/offtargets_pnas_mm10.tsv")
-  offtargets_extended_df = dplyr::bind_rows(
-    offtargets_df,
-    macs_offtargets$islands %>%
-      dplyr::inner_join(offtargets_df %>% dplyr::distinct(offtarget_bait_chrom, offtarget_bait_start, offtarget_bait_end, offtarget_bait_strand), by=c("island_chrom"="offtarget_bait_chrom")) %>%
-      dplyr::mutate(offtarget_is_primary=F) %>%
-      dplyr::select(
-        offtarget_bait_chrom=island_chrom, offtarget_bait_start, offtarget_bait_end, offtarget_bait_strand,
-        offtarget_chrom=island_chrom, offtarget_start=island_start, offtarget_end=island_end, offtarget_is_primary)
-  )
-}
-
 #' @export
 tlx_mark_offtargets = function(tlx_df, offtargets_df, offtarget_region=1000, bait_region=1000) {
   tlx_df$tlx_id = 1:nrow(tlx_df)
@@ -970,7 +927,7 @@ geom_tlxcov = function(x, scale=1) {
 
 
 #' @export
-tlxcov_macs2 = function(tlxcov_df, group, bgmodel_df, params, extended_islands=F, debug_plots=F) {
+tlxcov_macs2 = function(tlxcov_df, group, bgmodel_df, params, extended_islands=F, extended_islands_dist=1e6, extended_islands_significance=0.1, debug_plots=F) {
   validate_group(group)
   group_cols = tlx_get_group_cols(group, ignore.strand=T, ignore.control=T)
 
@@ -983,7 +940,7 @@ tlxcov_macs2 = function(tlxcov_df, group, bgmodel_df, params, extended_islands=F
     dplyr::do((function(z){
       zz<<-z
 
-      # z = tlxcov_df %>% dplyr::filter(tlx_group=="Chr5_101Mb")
+      # z = tlxcov_df %>% dplyr::filter(tlx_group=="Chr1_41Mb")
       # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH (Wei+DKFZ)")
       # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Inter (DKFZ)")
       # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Intra (DKFZ)")
@@ -993,18 +950,13 @@ tlxcov_macs2 = function(tlxcov_df, group, bgmodel_df, params, extended_islands=F
       control_ranges = tlxcov_ranges[tlxcov_ranges$tlx_control]
 
       group_desc = paste0(group_cols, rep("=", length(group_cols)), sapply(distinct(z[,group_cols]), as.character), collapse=",")
-      writeLines(paste0("Running MACS for group ", z$macs2_group_id[1], "/", z$macs2_group_count[1], " {", group_desc, "}"))
+      writeLines(paste0("Running MACS for group ", z$macs2_group_id[1], "/", z$macs2_group_count[1], " {", group_desc, "} | ", "Finding islands with ", length(sample_ranges), " sample value points and ", length(control_ranges), " control value points..."))
       if(length(sample_ranges)==0) {
         stop("Sample data not found!")
-      } else {
-        writeLines(paste0("Finding islands with ", length(sample_ranges), " sample value points and ", length(control_ranges), " control value points..."))
-        # if(length(control_ranges)==0) {
-        #   writeLines("Using background from bgmodel data")
-        # }
       }
 
       z.bgmodel_df = bgmodel_df %>% dplyr::filter(tlx_group==z$tlx_group[1]) %>% dplyr::select(-dplyr::matches("tlx_group"))
-      results = macs2_coverage(sample_ranges=sample_ranges, control_ranges=control_ranges, params=params, extended_islands=extended_islands, bgmodel_df=z.bgmodel_df, debug_plots=debug_plots)
+      results = macs2_coverage(sample_ranges=sample_ranges, control_ranges=control_ranges, params=params, extended_islands=extended_islands, extended_islands_dist=extended_islands_dist, extended_islands_significance=extended_islands_significance, bgmodel_df=z.bgmodel_df, debug_plots=debug_plots)
       results_df = dplyr::bind_cols(z[1,group_cols], dplyr::bind_rows(results[["islands"]], results[["qvalues"]])) %>%
         dplyr::relocate(dplyr::matches("qvalue_|island_"), .after=tidyselect::last_col())
       results_df
