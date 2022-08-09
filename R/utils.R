@@ -545,10 +545,7 @@ coverage_merge_strands = function(coverage_ranges, aggregate_fun, score_column="
     df2ranges(sum_seqnames, sum_start, sum_end) %>%
     innerJoinByOverlaps(coverage_clean_ranges)
 
-  merged_long_test = merged_long_df %>%
-    dplyr::group_by(sum_seqnames, sum_start, sum_end, raw_strand) %>%
-    dplyr::filter(dplyr::n()>1)
-  if(nrow(merged_long_test)>0) {
+  if(any(duplicated(merged_long_df[,c("sum_seqnames", "sum_start", "sum_end", "raw_strand")]))) {
     stop(paste0("Found overlaping regions in single strand data.\nCheck that strand information is not missing from provided ranges object.\nStrands present in ranges object: ", paste(as.character(unique(coverage_df$raw_strand)), collapse=",")))
   }
 
@@ -558,7 +555,7 @@ coverage_merge_strands = function(coverage_ranges, aggregate_fun, score_column="
     replace(is.na(.), 0)
   merged_wide_df$score = apply(merged_wide_df[, res_strands, drop=F], 1, FUN=aggregate_fun)
   merged_wide_ranges = GenomicRanges::makeGRangesFromDataFrame(merged_wide_df, ignore.strand=T, keep.extra.columns=T)
-  as(GenomicRanges::coverage(merged_wide_ranges, weight=mcols(merged_wide_ranges)$score), "GRanges")
+  as(GenomicRanges::coverage(merged_wide_ranges, weight=GenomicRanges::mcols(merged_wide_ranges)$score), "GRanges")
 }
 
 ranges_sample = function(ranges, mask_ranges, column, ntile=100000) {
@@ -604,6 +601,18 @@ ranges_sample = function(ranges, mask_ranges, column, ntile=100000) {
     GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns=T)
 
   ret
+}
+
+seqlengths2tiles = function(seqlengths, width, step) {
+  genome_tiles_template = GenomicRanges::tileGenome(seqlengths, tilewidth=width, cut.last.tile.in.chrom=T)
+  genome_tiles = GenomicRanges::GRanges()
+  for(str in seq(0, genome_tiles_width-1, by=step)) {
+    genome_tiles = suppressWarnings(IRanges::append(genome_tiles, GenomicRanges::trim(IRanges::shift(genome_tiles_template, str))))
+  }
+  genome_tiles = as.data.frame(GenomicRanges::sort(genome_tiles)) %>%
+    dplyr::rename(tile_chrom="seqnames", tile_start="start", tile_end="end") %>%
+    dplyr::select(tile_chrom, tile_start, tile_end) %>%
+    df2ranges(tile_chrom, tile_start, tile_end)
 }
 
 ranges2pure_tiles = function(ranges, column, width=1000, step=width, diff=0.1) {

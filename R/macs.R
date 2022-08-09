@@ -146,11 +146,10 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, bgmodel_df
     # writeLines(cmd_bdgcmp)
     # system(cmd_bdgcmp)
   } else {
-    distr_lower.tail = F
     pvalues_df = sample_df %>%
       dplyr::inner_join(control_df, by=c("sample_chrom"="control_chrom", "sample_start"="control_start", "sample_end"="control_end", "sample_strand"="control_strand")) %>%
       dplyr::group_by_at(colnames(control_df)[grepl("bgmodel_", colnames(control_df))]) %>%
-      dplyr::mutate(pvalue=distr_call("p", distr=bgmodel_distr[1], x=sample_score, params=dplyr::cur_data_all(), lower.tail=distr_lower.tail), bgmodel_signal=distr_call("q", distr=bgmodel_distr[1], x=params$minsignif, params=dplyr::cur_data_all(), lower.tail=distr_lower.tail)) %>%
+      dplyr::mutate(pvalue=distr_call("p", distr=bgmodel_distr[1], x=sample_score, params=dplyr::cur_data_all(), lower.tail=F), bgmodel_signal=distr_call("q", distr=bgmodel_distr[1], x=params$minsignif, params=dplyr::cur_data_all(), lower.tail=F)) %>%
       dplyr::mutate(pvalue=pmax(pvalue, dpois(sample_score, 2))) %>%
       dplyr::ungroup()
 

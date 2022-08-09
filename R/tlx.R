@@ -925,6 +925,13 @@ geom_tlxcov = function(x, scale=1) {
     geom_ribbon(aes(x=tlxcov_pos, ymin=0, ymax=tlxcov_pileup*scale, fill=tlx_strand), alpha=0.7, data=x_area)
 }
 
+tlx2seqlengths = function(tlx_df) {
+  tlx_df %>%
+    dplyr::group_by(Rname) %>%
+    dplyr::summarize(seqlengths=max(Rend)) %>%
+    tibble::deframe()
+}
+
 
 #' @export
 tlxcov_macs2 = function(tlxcov_df, group, bgmodel_df, params, extended_islands=F, extended_islands_dist=1e6, extended_islands_significance=0.1, debug_plots=F) {
