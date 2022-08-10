@@ -603,6 +603,7 @@ tlx_calc_copynumber = function(tlx_df, bowtie2_index, max_hits=500, threads=8, t
 
       writeLines("Using bowtie2 to find number of copies in reference fasta file...")
       cmd = paste0("bowtie2 -f -x ", bowtie2_index, " -U ", qseq_fasta ," -k ", max_hits, " --threads ", threads, " -S ", qseq_count)
+      writeLines(paste0("> ", cmd))
       system(cmd)
     }
 

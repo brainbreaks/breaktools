@@ -2,11 +2,11 @@ Package: breaktools
 Title: What the Package Does (One Line, Title Case)
 Version: 0.0.0.9000
 Authors@R: 
-    person(given = "First",
-           family = "Last",
+    person(given = "Sergej",
+           family = "Andrejev",
            role = c("aut", "cre"),
-           email = "first.last@example.com",
-           comment = c(ORCID = "YOUR-ORCID-ID"))
+           email = "sandrejev@gmail.com",
+           comment = c(ORCID="0000-0002-7875-0261"))
 Description: What the package does (one paragraph).
 License: `use_mit_license()`, `use_gpl3_license()` or friends to pick a
     license
@@ -15,13 +15,13 @@ LazyData: true
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.1.2
 Imports:
-    magrittr (>= 2.0.1),
-	readr (>= 1.4.0),
-	dplyr (>= 1.0.5),
+    nloptr,
+    tidyverse (>= 1.3.0),
 	GenomicRanges (>= 1.42.0),
+	rtracklayer (>=	1.56.1),
 	data.table (>= 1.14.0),
+	fitdistrplus (>= 1.1-8),
 	rstatix (>= 0.7.0),
 	bedr (>= 1.0.7),
 	reshape2 (>= 1.4.4),
-	bedr (>= 0.6.29),
 	ggseqlogo (>= 0.1)

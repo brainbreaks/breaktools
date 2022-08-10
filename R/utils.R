@@ -283,8 +283,8 @@ get_pairwise_alignment = function(seq1, seq2, gapOpening=10, gapExtension=4) {
   y1 = Biostrings::pairwiseAlignment(seq1, seq2, type="global-local", gapOpening=gapOpening, gapExtension=gapExtension)
   y2 = Biostrings::pairwiseAlignment(Biostrings::reverseComplement(Biostrings::DNAStringSet(seq1)), seq2, type="global-local", gapOpening=gapOpening, gapExtension=gapExtension)
 
-  y1_df = cbind(data.frame(score=Biostrings::score(y1), pid=Biostrings::pid(y2)), as.data.frame(ranges(Biostrings::subject(y1))))
-  y2_df = cbind(data.frame(score=Biostrings::score(y2), pid=Biostrings::pid(y2)), as.data.frame(ranges(Biostrings::subject(y2))))
+  y1_df = cbind(data.frame(score=Biostrings::score(y1), pid=Biostrings::pid(y2)), as.data.frame(IRanges::ranges(Biostrings::subject(y1))))
+  y2_df = cbind(data.frame(score=Biostrings::score(y2), pid=Biostrings::pid(y2)), as.data.frame(IRanges::ranges(Biostrings::subject(y2))))
   ret_df = y1_df
   ret_df[y2_df$score>y1_df$score,] = y2_df[y2_df$score>y1_df$score,]
 
