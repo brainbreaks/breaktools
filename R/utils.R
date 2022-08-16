@@ -515,12 +515,12 @@ distr_call = function(ver, distr, x, params, lower.tail=T) {
   do.call(paste0(ver, distr), params_clean)
 }
 
-coverage_find_empty_intervals = function(coverage_ranges, coverage_column="score", minlen=1e6, mincoverage=0)
+coverage_find_empty_intervals = function(coverage_ranges, coverage_column="score", minlen=1e6, maxcoverage=0)
 {
   if(!(coverage_column %in% colnames(GenomicRanges::mcols(coverage_ranges)))) {
     stop(paste0("Column '", coverage_column, "' not found in coverage ranges data columns"))
   }
-  mask_ranges = GenomicRanges::reduce(coverage_ranges[GenomicRanges::mcols(coverage_ranges)[[coverage_column]]==mincoverage]) %>%
+  mask_ranges = GenomicRanges::reduce(coverage_ranges[GenomicRanges::mcols(coverage_ranges)[[coverage_column]]<=maxcoverage]) %>%
     as.data.frame() %>%
     dplyr::group_by(seqnames) %>%
     dplyr::filter(width>=minlen) %>%
@@ -555,6 +555,7 @@ coverage_merge_strands = function(coverage_ranges, aggregate_fun, score_column="
     replace(is.na(.), 0)
   merged_wide_df$score = apply(merged_wide_df[, res_strands, drop=F], 1, FUN=aggregate_fun)
   merged_wide_ranges = GenomicRanges::makeGRangesFromDataFrame(merged_wide_df, ignore.strand=T, keep.extra.columns=T)
+
   as(GenomicRanges::coverage(merged_wide_ranges, weight=GenomicRanges::mcols(merged_wide_ranges)$score), "GRanges")
 }
 
@@ -606,7 +607,7 @@ ranges_sample = function(ranges, mask_ranges, column, ntile=100000) {
 seqlengths2tiles = function(seqlengths, width, step) {
   genome_tiles_template = GenomicRanges::tileGenome(seqlengths, tilewidth=width, cut.last.tile.in.chrom=T)
   genome_tiles = GenomicRanges::GRanges()
-  for(str in seq(0, genome_tiles_width-1, by=step)) {
+  for(str in seq(0, width-1, by=step)) {
     genome_tiles = suppressWarnings(IRanges::append(genome_tiles, GenomicRanges::trim(IRanges::shift(genome_tiles_template, str))))
   }
   genome_tiles = as.data.frame(GenomicRanges::sort(genome_tiles)) %>%
@@ -644,4 +645,66 @@ ranges2pure_tiles = function(ranges, column, width=1000, step=width, diff=0.1) {
 
   ret = suppressWarnings(do.call(what = c, args = means_list))
   ret
+}
+
+
+ranges2seqlengths = function(ranges) {
+  as.data.frame(ranges) %>%
+    dplyr::group_by(seqnames) %>%
+    dplyr::summarize(seqlengths=max(end)) %>%
+    tibble::deframe()
+}
+
+bootstrap_data_overlaps = function(evaluated_ranges, data_ranges, excluded_ranges=evaluated_ranges, genome_tiles_step=10000, genome_tiles_width=50000, n_samples=1000) {
+  seqlengths = ranges2seqlengths(data_ranges)
+  genome_tiles = seqlengths2tiles(seqlengths, genome_tiles_width, genome_tiles_step)
+  genome_tiles = genome_tiles[GenomicRanges::width(genome_tiles)==genome_tiles_width]
+
+  evaluated_df = as.data.frame(evaluated_ranges) %>%
+    dplyr::select(evaluated_chrom=seqnames, evaluated_start=start, evaluated_end=end) %>%
+    dplyr::mutate(evaluated_tile_count=ceiling((evaluated_end-evaluated_start) / genome_tiles_width))
+  evaluated_ranges = evaluated_df %>% df2ranges(evaluated_chrom, evaluated_start, evaluated_end)
+  data_df = as.data.frame(data_ranges) %>%
+    dplyr::select(data_chrom=seqnames, data_start=start, data_end=end)
+  data_ranges = data_df %>% df2ranges(data_chrom, data_start, data_end)
+  excluded_df = as.data.frame(excluded_ranges) %>%
+    dplyr::select(excluded_chrom=seqnames, excluded_start=start, excluded_end=end)
+  excluded_ranges = excluded_df %>% df2ranges(excluded_chrom, excluded_start, excluded_end)
+
+  bg_tiles_df = genome_tiles %>%
+    leftJoinByOverlaps(excluded_ranges) %>%
+    dplyr::filter(is.na(excluded_start)) %>%
+    dplyr::select(dplyr::starts_with("tile_")) %>%
+    dplyr::right_join(evaluated_df, by=c("tile_chrom"="evaluated_chrom")) %>%
+    dplyr::group_by(bootstrap_chrom=tile_chrom, bootstrap_start=evaluated_start, bootstrap_end=evaluated_end) %>%
+    dplyr::sample_n(evaluated_tile_count[1]*n_samples, replace=T) %>%
+    dplyr::group_by(bootstrap_chrom, bootstrap_start, bootstrap_end) %>%
+    dplyr::mutate(bootstrap_sample_num=floor((1:dplyr::n()-1)/evaluated_tile_count)+1) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(has_data=!is.na(tile_chrom) & !is.na(tile_start) & !is.na(tile_end))
+  bg_df = bg_tiles_df %>%
+    dplyr::mutate(bootstrap_data_count=0) %>%
+    dplyr::group_by(has_data) %>%
+    dplyr::do((function(x){
+      xx <<-x
+      if(!x$has_data[1]) return(x)
+      x$bootstrap_data_count = x %>%
+        df2ranges(tile_chrom, tile_start, tile_end) %>%
+        GenomicRanges::countOverlaps(data_ranges)
+      x
+    })(.)) %>%
+    dplyr::group_by(bootstrap_chrom, bootstrap_start, bootstrap_end, bootstrap_sample_num) %>%
+    dplyr::summarize(bootstrap_data_count=sum(bootstrap_data_count), bootstrap_type="background") %>%
+    dplyr::group_by(bootstrap_chrom, bootstrap_start, bootstrap_end) %>%
+    dplyr::mutate(bootstrap_data_mean=mean(bootstrap_data_count)) %>%
+    dplyr::ungroup()
+  sg_df = tibble::tibble(
+    bootstrap_chrom=evaluated_ranges$evaluated_chrom,
+    bootstrap_start=evaluated_ranges$evaluated_start,
+    bootstrap_end=evaluated_ranges$evaluated_end,
+    bootstrap_sample_num=1,
+    bootstrap_type="signal",
+    bootstrap_data_count=evaluated_ranges %>% GenomicRanges::countOverlaps(data_ranges)) %>%
+    dplyr::mutate(bootstrap_data_mean=bootstrap_data_count)
+  dplyr::bind_rows(bg_df, sg_df)
 }

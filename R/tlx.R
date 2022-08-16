@@ -341,7 +341,7 @@ tlx_libfactors = function(tlx_df, normalize_within, normalize_between, normaliza
 
   normalization_within_target_fun = match.fun(normalization_within_target)
   if(grepl("^samplecount", normalization_between_target)) {
-    normalization_between_target_fun = identity
+    normalization_between_target_fun = match.fun(gsub("samplecount_", "", normalization_between_target))
   } else {
     normalization_between_target_fun = match.fun(normalization_between_target)
   }
@@ -354,7 +354,7 @@ tlx_libfactors = function(tlx_df, normalize_within, normalize_between, normaliza
     dplyr::summarize(library_size=dplyr::n(), .groups="keep") %>%
     dplyr::ungroup() %>%
     dplyr::group_by_at(normalize_within_cols) %>%
-    dplyr::mutate(library_target=ifelse(normalization_within_target_fun(library_size)==library_size, normalization_within_target, ""), library_within_factor=normalization_within_target_fun(library_size)/library_size) %>%
+    dplyr::mutate(library_within_factor=normalization_within_target_fun(library_size)/library_size) %>%
     dplyr::ungroup()
   groupsizes_df = libsizes_df %>%
     dplyr::group_by_at(normalize_group_cols) %>%
@@ -362,9 +362,9 @@ tlx_libfactors = function(tlx_df, normalize_within, normalize_between, normaliza
     dplyr::ungroup() %>%
     dplyr::group_by_at(normalize_between_cols) %>%
     dplyr::mutate(
-      library_between_samplefactor=library_between_samplecount/library_between_samplecount,
+      library_between_samplefactor=normalization_between_target_fun(library_between_samplecount)/library_between_samplecount,
       library_between_junctionfactor=normalization_between_target_fun(library_groupsize)/library_groupsize,
-      library_between_factor=ifelse(normalization_target=="samplecount", library_between_samplefactor, library_between_junctionfactor)) %>%
+      library_between_factor=dplyr::case_when(grepl("samplecount", normalization_between_target)~library_between_samplefactor, T~library_between_junctionfactor)) %>%
     data.frame()
   libsizes_df = libsizes_df %>%
     dplyr::inner_join(groupsizes_df, by=intersect(colnames(libsizes_df), colnames(groupsizes_df))) %>%
@@ -847,37 +847,77 @@ tlx_mark_offtargets = function(tlx_df, offtargets_df, offtarget_region=1000, bai
 
 
 #' @export
-tlx_strand_crosscorrelation = function(z, step=1000, min_points=5, negative_correlation=F)
+tlx_strand_crosscorrelation = function(tlxcov_df, step=1000, max_rellag=0.25, min_points=5, method="pearson", negative_correlation=F, negative_lag=T)
 {
-  zz<<-z
-  z.range = c(min(z$tlxcov_start), max(z$tlxcov_end-1))
-  z.sense = z %>%
+  z.range = c(min(tlxcov_df$tlxcov_start), max(tlxcov_df$tlxcov_end-1))
+  z.sense = tlxcov_df %>%
     dplyr::filter(tlx_strand=="+") %>%
     dplyr::mutate(start=tlxcov_start, end=tlxcov_end-1) %>%
     reshape2::melt(measure.vars=c("start", "end"), value.name="position") %>%
-    dplyr::arrange(position)
-  z.anti = z %>%
+    dplyr::arrange(position) %>%
+    dplyr::distinct(position, .keep_all=T)
+  z.anti = tlxcov_df %>%
     dplyr::filter(tlx_strand=="-") %>%
     dplyr::mutate(start=tlxcov_start, end=tlxcov_end-1) %>%
     reshape2::melt(measure.vars=c("start", "end"), value.name="position") %>%
-    dplyr::arrange(position)
+    dplyr::arrange(position) %>%
+    dplyr::distinct(position, .keep_all=T)
 
   if(nrow(z.sense)>=min_points & nrow(z.anti)>=min_points) {
-    p.sense = approx(x=z.sense$position, y=z.sense$tlxcov_pileup, xout=seq(z.range[1], z.range[2], by=step), yleft=0, yright=0)$y
-    p.anti = approx(x=z.anti$position, y=z.anti$tlxcov_pileup, xout=seq(z.range[1], z.range[2], by=step), yleft=0, yright=0)$y
+    pos = seq(z.range[1], z.range[2], by=step)
+    p.sense = approx(x=z.sense$position, y=z.sense$tlxcov_pileup, xout=pos, yleft=0, yright=0)$y
+    p.anti = approx(x=z.anti$position, y=z.anti$tlxcov_pileup, xout=pos, yleft=0, yright=0)$y
 
-    ccf.sense = ccf(p.sense, p.anti, lag.max=floor(length(p.anti)/2), plot=F)
+    n = length(p.sense)
+    max_lag = floor(length(p.anti)*max_rellag)
+    ccf.sense = data.frame(lag=-max_lag:max_lag)
+    cor_fun = function(t) {
+      tt<<-t
+      p.cor = list(estimate=NA_real_, p.value=NA_real_)
+      if(t>0) {
+        if(length(unique(na.omit(p.sense[(1 + t):n])))>=min_points & length(unique(na.omit(p.anti[1:(n - t)])))>=min_points) {
+          p.cor = cor.test(p.sense[(1 + t):n], p.anti[1:(n - t)], method=method)
+        }
+      } else {
+        if(t<0) {
+          if(length(unique(na.omit(p.sense[1:(n + t)])))>=min_points & length(unique(na.omit(p.anti[(1 - t):n])))>=min_points) {
+            p.cor = cor.test(p.sense[1:(n + t)], p.anti[(1 - t):n], method=method)
+          }
+        } else {
+          if(length(unique(na.omit(p.sense)))>=min_points & length(unique(na.omit(p.anti)))>=min_points) {
+            p.cor = cor.test(p.sense, p.anti, method=method)
+          }
+        }
+      }
+      data.frame(acf=p.cor$estimate, pvalue=p.cor$p.value)
+    }
+    ccf.sense = cbind(ccf.sense, do.call(rbind, lapply(ccf.sense$lag, cor_fun)))
+    # plot(y=ccf.sense$acf, x=ccf.sense$lag, type="l")
+
+    # ccf.sense = stats::ccf(p.sense, p.anti,type="covariance", lag.max=max_lag, plot=F, na.action=stats::na.pass)
+    acf_values = ccf.sense$acf
+    if(!negative_lag) acf_values[ccf.sense$lag<0] = NA_real_
     if(negative_correlation) {
-      f = which.max(abs(ccf.sense$acf))
+      # t = ccf.sense$lag[f]
+      # 1 / length(p.sense) * sum((p.sense[(1 + t):length(p.sense)] - mean(p.sense)) * (p.anti[1:(length(p.sense) - t)] - mean(p.anti)))
+      f = which.max(abs(acf_values))
     } else {
-      f = which.max(ccf.sense$acf)
+      f = which.max(acf_values)
     }
 
-    res = data.frame(crosscorrelation_lag=ccf.sense$lag[f]*step, crosscorrelation_rellag=ccf.sense$lag[f]/length(p.sense), crosscorrelation_value=ccf.sense$acf[f])
+    if(length(f)==0) {
+      res = data.frame(crosscorrelation_lag=NA_real_, crosscorrelation_rellag=NA_real_, crosscorrelation_value=NA_real_, crosscorrelation_cor=NA_real_, crosscorrelation_cor_pvalue=NA_real_)
+    } else {
+      res = data.frame(crosscorrelation_lag=ccf.sense$lag[f]*step, crosscorrelation_rellag=ccf.sense$lag[f]/length(p.sense), crosscorrelation_value=ccf.sense$acf[f], crosscorrelation_cor=ccf.sense$acf[f], crosscorrelation_cor_pvalue=ccf.sense$pvalue[f])
+    }
   } else {
-    res = data.frame(crosscorrelation_lag=NA_real_, crosscorrelation_rellag=NA_real_, crosscorrelation_value=NA_real_)
+    res = data.frame(crosscorrelation_lag=NA_real_, crosscorrelation_rellag=NA_real_, crosscorrelation_value=NA_real_, crosscorrelation_cor=NA_real_, crosscorrelation_cor_pvalue=NA_real_)
   }
+
+  res
 }
+
+
 
 #' @export
 tlx_mark_repeats = function(tlx_df, repeatmasker_df) {
@@ -895,10 +935,6 @@ tlx_mark_repeats = function(tlx_df, repeatmasker_df) {
     dplyr::right_join(tlx_df, by=c("queryHits"="tlx_id")) %>%
     dplyr::select(-queryHits) %>%
     data.frame()
-  # data.table::setDT(r1)[,.(tlx_repeatmasker_class=paste0(unique(repeatmasker_class),collapse=", ")), by = .(queryHits)] %>%
-  #   dplyr::right_join(tlx_df, by=c("queryHits"="tlx_id")) %>%
-  #   dplyr::select(-queryHits) %>%
-  #   data.frame()
 }
 
 #' @export
@@ -926,13 +962,6 @@ geom_tlxcov = function(x, scale=1) {
     geom_ribbon(aes(x=tlxcov_pos, ymin=0, ymax=tlxcov_pileup*scale, fill=tlx_strand), alpha=0.7, data=x_area)
 }
 
-tlx2seqlengths = function(tlx_df) {
-  tlx_df %>%
-    dplyr::group_by(Rname) %>%
-    dplyr::summarize(seqlengths=max(Rend)) %>%
-    tibble::deframe()
-}
-
 
 #' @export
 tlxcov_macs2 = function(tlxcov_df, group, bgmodel_df, params, extended_islands=F, extended_islands_dist=1e6, extended_islands_significance=0.1, debug_plots=F) {
@@ -948,11 +977,6 @@ tlxcov_macs2 = function(tlxcov_df, group, bgmodel_df, params, extended_islands=F
     dplyr::do((function(z){
       zz<<-z
 
-      # z = tlxcov_df %>% dplyr::filter(tlx_group=="Chr1_41Mb")
-      # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH (Wei+DKFZ)")
-      # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Inter (DKFZ)")
-      # z = tlxcov_df %>% dplyr::filter(tlx_group=="APH-Intra (DKFZ)")
-      # z = tlxcov_df %>% dplyr::filter(tlx_group=="DMSO-Intra (DKFZ)")
       tlxcov_ranges = z %>% dplyr::mutate(score=tlxcov_pileup) %>% df2ranges(tlxcov_chrom, tlxcov_start, tlxcov_end, tlx_strand)
       sample_ranges = tlxcov_ranges[!tlxcov_ranges$tlx_control]
       control_ranges = tlxcov_ranges[tlxcov_ranges$tlx_control]
