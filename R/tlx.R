@@ -938,28 +938,19 @@ tlx_mark_repeats = function(tlx_df, repeatmasker_df) {
 }
 
 #' @export
-geom_tlxcov = function(x, scale=1) {
-  x_area = x %>%
-    dplyr::group_by(rdc_chrom, rdc_cluster, rdc_cluster_display)  %>%
-    dplyr::summarize(tlxcov_prevend=c(0, tlxcov_end[-dplyr::n()]), tlx_strand, tlxcov_start, tlxcov_end, tlxcov_pileup) %>%
-    dplyr::rowwise() %>%
-    dplyr::do((function(z) {
-      if(z$tlxcov_prevend==0) {
-        d = data.frame(tlxcov_pos=c(z$tlxcov_start, z$tlxcov_start, z$tlxcov_end), tlxcov_pileup=c(0,z$tlxcov_pileup,z$tlxcov_pileup), tlx_strand=z$tlx_strand)
-      } else {
-        if(z$tlxcov_start!=z$tlxcov_prevend) {
-          d = data.frame(tlxcov_pos=c(z$tlxcov_prevend, z$tlxcov_start, z$tlxcov_start, z$tlxcov_end), tlxcov_pileup=c(0,0,z$tlxcov_pileup,z$tlxcov_pileup), tlx_strand=z$tlx_strand)
-        } else {
-         d = data.frame(tlxcov_pos=c(z$tlxcov_start, z$tlxcov_end), tlxcov_pileup=z$tlxcov_pileup, tlx_strand=z$tlx_strand)
-        }
-      }
-      d = cbind(d, rdc_chrom=z$rdc_chrom, rdc_cluster=z$rdc_cluster, rdc_cluster_display=z$rdc_cluster_display)
-      d
-    })(.)) %>%
+geom_tlxcov = function(tlxcov_df, grouping_cols=c("rdc_chrom", "rdc_name", "tlx_strand"), scale=1) {
+  distinct_cols = unique(c(grouping_cols, "tlxcov_chrom", "tlxcov_pos", "tlx_strand"))
+  tlxcov_extdf = tlxcov_df %>%
+    dplyr::arrange(tlxcov_chrom, tlx_strand, tlxcov_start) %>%
+    dplyr::group_by_at(unique(c(grouping_cols, "tlxcov_chrom", "tlx_strand"))) %>%
+    dplyr::mutate(tlxcov_diff=tlxcov_start - dplyr::lag(tlxcov_end)) %>%
     dplyr::ungroup()
+  if(any(tlxcov_extdf$tlxcov_diff<0, na.rm=T)) stop("Overlapping tlxcov regions")
+  x_area = tlxcov_df %>%
+    reshape2::melt(measure.vars=c("tlxcov_start", "tlxcov_end"), value.name="tlxcov_pos") %>%
+    dplyr::distinct_at(distinct_cols, .keep_all=T)
 
-
-    geom_ribbon(aes(x=tlxcov_pos, ymin=0, ymax=tlxcov_pileup*scale, fill=tlx_strand), alpha=0.7, data=x_area)
+  geom_ribbon(aes(x=tlxcov_pos, ymin=0, ymax=tlxcov_pileup*scale, fill=tlx_strand), alpha=0.7, data=x_area)
 }
 
 
