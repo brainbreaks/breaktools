@@ -17,8 +17,8 @@ RoxygenNote: 7.1.2
 Imports:
     nloptr,
     tidyverse (>= 1.3.0),
-	GenomicRanges (>= 1.42.0),
-	rtracklayer (>=	1.56.1),
+	GenomicRanges (>= 1.42),
+	rtracklayer (>=	1.54),
 	data.table (>= 1.14.0),
 	fitdistrplus (>= 1.1-8),
 	rstatix (>= 0.7.0),

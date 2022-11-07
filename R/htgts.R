@@ -7,7 +7,7 @@ htgts_calculate_positions = function(sequences_df, database_path, primer_sequenc
     dplyr::mutate(Sequence_and_PAM=paste0(Sequence, Sequence_PAM))  %>%
     reshape2::melt(measure.vars=c("RED_primer", "Sequence_and_PAM"), value.name="Seq")
 
-  blat_df = get_blat(unique(sequences_long_df$Seq), database=database_path)
+  blat_df = get_blat(unique(sequences_long_df$Seq), fasta=database_path)
   blat_identical_df = blat_df %>% dplyr::filter(blat_mismatch==0 & blat_target_gap_bases==0)
   sequences_long2blat_df = sequences_long_df %>%
     dplyr::inner_join(blat_identical_df %>% dplyr::select(blat_sequence, blat_target_name, blat_target_start, blat_target_end, blat_strand, blat_mismatch, blat_target_gap_bases), by=c("Seq"="blat_sequence")) %>%

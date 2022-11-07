@@ -136,6 +136,14 @@ tlx_read = function(path, sample, group="", group_i=1, control=F) {
     dplyr::mutate(Seq_length=as.numeric(nchar(Seq)), tlx_sample=as.character(sample), tlx_path=as.character(path), tlx_group=as.character(group), tlx_group_i=as.numeric(group_i), tlx_control=as.logical(control)) %>%
     dplyr::mutate(tlx_duplicated=duplicated(paste0(Rname, B_Rstart, B_Rend, ifelse(tlx_strand=="+", Rstart, Rend))) | duplicated(Seq)) %>%
     dplyr::mutate(QSeq=substr(Seq, Qstart, Qend))
+
+
+  if(any(is.na(tlx_single_df$misprimed))) {
+    warning(paste0("[", sample ,"] ", sum(is.na(tlx_single_df$misprimed)), " of entries had misprimed column not assigned (NA). Replacing with 0 ..."))
+    tlx_single_df$misprimed[is.na(tlx_single_df$misprimed)] = 0
+  }
+
+  tlx_single_df
 }
 
 
@@ -817,7 +825,7 @@ tlx_extract_bait = function(tlx_df, bait_size, bait_region) {
   tlx_df %>%
     dplyr::select(-dplyr::matches("^(tlx_bait_chrom|tlx_bait_start|tlx_bait_end|tlx_bait_strand|tlx_is_bait_junction)$")) %>%
     dplyr::group_by(tlx_group, tlx_sample, B_Rname, B_Strand) %>%
-    dplyr::mutate(misprimed_max=max(misprimed-uncut)) %>%
+    dplyr::mutate(misprimed_max=max(misprimed-uncut, na.rm=T)) %>%
     dplyr::mutate(tlx_bait_start=ifelse(B_Strand<0, B_Rstart + misprimed - misprimed_max-2, B_Rend - misprimed + misprimed_max)) %>%
     dplyr::mutate(tlx_bait_end=tlx_bait_start+bait_size - 1) %>%
     dplyr::mutate(tlx_bait_chrom=B_Rname, tlx_bait_strand=ifelse(B_Strand<0, "-", "+")) %>%
