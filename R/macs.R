@@ -29,8 +29,6 @@ macs2_coverage_bgmodel = function(coverage_ranges, distr, coverage_column="score
     mask_ranges = GenomicRanges::GRanges()
   }
 
-  # as.data.frame(mask_ranges) %>% dplyr::select(mask_chrom, mask_start, mask_end) %>% readr::write_tsv("reports/detect_rdc/mask.bed", col_names=F)
-
   bgmodel_data_df = suppressWarnings(coverage_ranges %>%
     ranges_sample(column=coverage_column, mask_ranges=mask_ranges, ntile=1e5) %>%
     as.data.frame() %>%
@@ -48,10 +46,12 @@ macs2_coverage_bgmodel = function(coverage_ranges, distr, coverage_column="score
     dplyr::filter(bgmodel_chrom!="chrY") %>%
     dplyr::group_by(bgmodel_chrom, bgmodel_strand) %>%
     dplyr::do((function(z) {
-      yy<<-z
       fixargs = NULL
       probs = c(pmin(0.1, mean(z$coverage_score==0)), pmax(1-mean(z$coverage_score>=3), 0.9))
-      fit_gamma = fitdistrplus::fitdist(z$coverage_score, distr=distr, fix.arg=fixargs, method="qme", probs=probs)
+      initial_gamma = fitdistrplus::fitdist(z$coverage_score, distr=distr, fix.arg=fixargs, method="mle")
+      fit_gamma = tryCatch({
+        fitdistrplus::fitdist(z$coverage_score, distr=distr, fix.arg=fixargs, method="qme", probs=probs, start=as.list(initial_gamma$estimate))
+      }, warning=function(e) initial_gamma, error=function(e) initial_gamma)
       if(!is.null(fixargs) & length(fixargs)>0) {
         fit_gamma$estimate = unlist(c(fit_gamma$estimate, fixargs[setdiff(names(fixargs), names(fit_gamma$estimate))]))
       }
@@ -313,13 +313,13 @@ macs2_coverage = function(sample_ranges, control_ranges=NULL, params, bgmodel_df
         island_score=island_score[which.max(island_score)]) %>%
       dplyr::ungroup() %>%
       dplyr::filter(island_extended_length>=params$minlen) %>%
-      dplyr::mutate(island_name=paste0("RDC_", stringr::str_pad(1:dplyr::n(), 3, pad="0")))
+      dplyr::mutate(island_name=paste0("ISLAND_", stringr::str_pad(1:dplyr::n(), 3, pad="0")))
 
     writeLines(paste0("Extending islands reduced to ", nrow(islands_extended_ranges), " initial islands (", paste0(names(table(islands_extended_ranges$island_strand)), ":", table(islands_extended_ranges$island_strand), collapse=","), ")"))
     } else {
       islands_results_df = islands_df %>%
         dplyr::filter(island_length>=params$minlen) %>%
-        dplyr::mutate(island_name=paste0("RDC_", stringr::str_pad(1:dplyr::n(), 3, pad="0")))
+        dplyr::mutate(island_name=paste0("ISLAND_", stringr::str_pad(1:dplyr::n(), 3, pad="0")))
     }
   } else {
     islands_results_df = islands_df

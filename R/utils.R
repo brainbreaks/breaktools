@@ -94,8 +94,12 @@ leftJoinByOverlaps = function(query_ranges, subject_ranges, ...) {
   query_ranges = r$query_ranges
   subject_ranges = r$subject_ranges
 
-  query_ranges$query_id = 1:length(query_ranges)
-  subject_ranges$subject_id = 1:length(subject_ranges)
+  if(length(query_ranges)>0) {
+    query_ranges$query_id = 1:length(query_ranges)
+  }
+  if(length(subject_ranges)>0) {
+    subject_ranges$subject_id = 1:length(subject_ranges)
+  }
   result_df = as.data.frame(IRanges::mergeByOverlaps(query_ranges, subject_ranges)) %>% dplyr::select(-dplyr::matches("^(query|subject)_ranges\\."))
   result_df = dplyr::bind_rows(result_df, as.data.frame(GenomicRanges::mcols(query_ranges)) %>% dplyr::anti_join(result_df %>% dplyr::select(query_id), by="query_id"))
   result_df = result_df %>% dplyr::select(-dplyr::matches("^(query|subject)_ranges\\.")) %>% dplyr::select(-dplyr::matches("^query_id|subject_id$"))
@@ -121,8 +125,13 @@ fullJoinByOverlaps = function(query_ranges, subject_ranges, ...) {
   query_ranges = r$query_ranges
   subject_ranges = r$subject_ranges
 
-  query_ranges$query_id = 1:length(query_ranges)
-  subject_ranges$subject_id = 1:length(subject_ranges)
+  if(length(query_ranges)>0) {
+    query_ranges$query_id = 1:length(query_ranges)
+  }
+  if(length(subject_ranges)>0) {
+    subject_ranges$subject_id = 1:length(subject_ranges)
+  }
+
   result_df = as.data.frame(IRanges::mergeByOverlaps(query_ranges, subject_ranges, ...))
   result_df = dplyr::bind_rows(
     result_df,
@@ -403,7 +412,7 @@ get_bowtie = function(sequences, fasta, threads=30, tmp_dir="tmp") {
 #'
 #' @param tmp_dir Path to cache directory
 #' @param max_age Max age of files in seconds. Remove everything older than specified age
-clear_tmpdir = function(tmp_dir="tmp", max_age=604800) {
+clear_tmpdir = function(tmp_dir="tmp", max_age=2419200) {
   if(is.null(max_age)) {
     max_age = 604800
   }
@@ -515,6 +524,17 @@ distr_call = function(ver, distr, x, params, lower.tail=T) {
   do.call(paste0(ver, distr), params_clean)
 }
 
+#' @title coverage_find_empty_intervals
+#' @export
+#'
+#' @description Finds ranges in pileup data where there is not enough coverage
+#'
+#' @param coverage_ranges Pileup data that is used to find the intervals
+#' @param coverage_column Column name with pileup numbers
+#' @param minlen Minimal length of the range with data sattisfying maxcoverage critaria
+#' @param maxcoverage A threshold on amount of data that would fullfills coverage criteria. Areas with less than this threshold are considered empty
+#'
+#' @return GRanges object with ranges sattisfying coverage criteria
 coverage_find_empty_intervals = function(coverage_ranges, coverage_column="score", minlen=1e6, maxcoverage=0)
 {
   if(!(coverage_column %in% colnames(GenomicRanges::mcols(coverage_ranges)))) {

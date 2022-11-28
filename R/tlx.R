@@ -946,7 +946,7 @@ tlx_mark_repeats = function(tlx_df, repeatmasker_df) {
 }
 
 #' @export
-geom_tlxcov = function(tlxcov_df, grouping_cols=c("rdc_chrom", "rdc_name", "tlx_strand"), scale=1) {
+geom_tlxcov = function(tlxcov_df, grouping_cols=c("rdc_chrom", "rdc_name", "tlx_strand"), scale=1, alpha=0.7) {
   distinct_cols = unique(c(grouping_cols, "tlxcov_chrom", "tlxcov_pos", "tlx_strand"))
   tlxcov_extdf = tlxcov_df %>%
     dplyr::arrange(tlxcov_chrom, tlx_strand, tlxcov_start) %>%
@@ -958,7 +958,7 @@ geom_tlxcov = function(tlxcov_df, grouping_cols=c("rdc_chrom", "rdc_name", "tlx_
     reshape2::melt(measure.vars=c("tlxcov_start", "tlxcov_end"), value.name="tlxcov_pos") %>%
     dplyr::distinct_at(distinct_cols, .keep_all=T)
 
-  geom_ribbon(aes(x=tlxcov_pos, ymin=0, ymax=tlxcov_pileup*scale, fill=tlx_strand), alpha=0.7, data=x_area)
+  geom_ribbon(aes(x=tlxcov_pos, ymin=0, ymax=tlxcov_pileup*scale, fill=tlx_strand), alpha=alpha, data=x_area)
 }
 
 
