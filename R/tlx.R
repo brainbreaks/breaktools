@@ -949,11 +949,14 @@ tlx_mark_repeats = function(tlx_df, repeatmasker_df) {
 geom_tlxcov = function(tlxcov_df, grouping_cols=c("rdc_chrom", "rdc_name", "tlx_strand"), scale=1, alpha=0.7) {
   distinct_cols = unique(c(grouping_cols, "tlxcov_chrom", "tlxcov_pos", "tlx_strand"))
   tlxcov_extdf = tlxcov_df %>%
-    dplyr::arrange(tlxcov_chrom, tlx_strand, tlxcov_start) %>%
+    dplyr::arrange(tlxcov_chrom, tlx_strand, tlxcov_end) %>%
     dplyr::group_by_at(unique(c(grouping_cols, "tlxcov_chrom", "tlx_strand"))) %>%
+    # dplyr::filter(tlxcov_start - dplyr::lag(tlxcov_end)<0 & tlxcov_strand=="+")
     dplyr::mutate(tlxcov_diff=tlxcov_start - dplyr::lag(tlxcov_end)) %>%
-    dplyr::ungroup()
-  if(any(tlxcov_extdf$tlxcov_diff<0, na.rm=T)) stop("Overlapping tlxcov regions")
+    dplyr::ungroup() %>%
+    dplyr::filter(tlxcov_diff<0)
+
+  if(length(which(tlxcov_extdf$tlxcov_diff<0))>0) stop("Overlapping tlxcov regions")
   x_area = tlxcov_df %>%
     reshape2::melt(measure.vars=c("tlxcov_start", "tlxcov_end"), value.name="tlxcov_pos") %>%
     dplyr::distinct_at(distinct_cols, .keep_all=T)

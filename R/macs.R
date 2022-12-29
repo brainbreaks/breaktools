@@ -6,8 +6,8 @@ macs_cols = function() {
   )
 }
 
-macs2_params = function(extsize=1e5, exttype="symetrical", llocal=1e7, minqvalue=NA_real_, minpvalue=NA_real_, maxgap=5e5, minlen=100e3, seedlen=50e3, seedgap=50e3, effective_size=1.87e9, baseline=0) {
-  as.data.frame(list(exttype=exttype, extsize=extsize, llocal=llocal, minqvalue=minqvalue, minpvalue=minpvalue, maxgap=maxgap, seedgap=seedgap, minlen=minlen, seedlen=seedlen, effective_size=effective_size, baseline=baseline)) %>%
+macs2_params = function(extsize=1e5, exttype="symetrical", minqvalue=NA_real_, minpvalue=NA_real_, maxgap=5e5, minlen=100e3, seedlen=50e3, seedgap=50e3, effective_size=1.87e9, baseline=0) {
+  as.data.frame(list(exttype=exttype, extsize=extsize, minqvalue=minqvalue, minpvalue=minpvalue, maxgap=maxgap, seedgap=seedgap, minlen=minlen, seedlen=seedlen, effective_size=effective_size, baseline=baseline)) %>%
     dplyr::mutate(minsignif=ifelse(!is.na(minqvalue), minqvalue, minpvalue))
 }
 

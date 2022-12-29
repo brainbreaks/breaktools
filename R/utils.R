@@ -100,7 +100,7 @@ leftJoinByOverlaps = function(query_ranges, subject_ranges, ...) {
   if(length(subject_ranges)>0) {
     subject_ranges$subject_id = 1:length(subject_ranges)
   }
-  result_df = as.data.frame(IRanges::mergeByOverlaps(query_ranges, subject_ranges)) %>% dplyr::select(-dplyr::matches("^(query|subject)_ranges\\."))
+  result_df = as.data.frame(IRanges::mergeByOverlaps(query_ranges, subject_ranges, ...)) %>% dplyr::select(-dplyr::matches("^(query|subject)_ranges\\."))
   result_df = dplyr::bind_rows(result_df, as.data.frame(GenomicRanges::mcols(query_ranges)) %>% dplyr::anti_join(result_df %>% dplyr::select(query_id), by="query_id"))
   result_df = result_df %>% dplyr::select(-dplyr::matches("^(query|subject)_ranges\\.")) %>% dplyr::select(-dplyr::matches("^query_id|subject_id$"))
 
